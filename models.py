@@ -7,6 +7,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.generic import GenericForeignKey
 from django.core.validators import validate_email, ValidationError
 from django.core.serializers.python import Serializer, Deserializer
+from django.core.urlresolvers import reverse
 from django.utils import timezone
 from madlibs.models.fields import DictField, JSONTextField
 
@@ -158,6 +159,10 @@ class Rule(models.Model):
         if (old_obj and not isinstance(old_obj, model)) or (new_obj and not isinstance(new_obj, model)):
             return False
         return MATCHERS[self.when](self, old_obj, new_obj)
+
+    def get_absolute_url(self):
+        """For now we'll just use the admin, but eventually we'll want a view customers can use."""
+        return reverse('admin:rule_reactor_rule_change', kwargs={'object_id': self.pk})
 
 
 class OccQueryMixin(object):
