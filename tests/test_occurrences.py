@@ -37,7 +37,7 @@ class TestOccurrence(TestCase):
         occ.object.first_name = 'Glen'
         self.assertTrue(occ.try_resolve(self.user))
         self.assertIsNot(occ.resolution_date, None)
-        self.assertIs(occ.resolved_by, self.user)
+        self.assertEqual(occ.resolved_by.pk, self.user.pk)
         self.assertEqual(occ.resolution_message, 'automatic')
 
     def test_try_resolve2(self):
@@ -55,7 +55,7 @@ class TestOccurrence(TestCase):
         occ.object.ssn = '999999999'
         self.assertTrue(occ.try_resolve(self.user))
         self.assertIsNot(occ.resolution_date, None)
-        self.assertIs(occ.resolved_by, self.user)
+        self.assertEqual(occ.resolved_by.pk, self.user.pk)
         self.assertEqual(occ.resolution_message, 'automatic')
 
     def test_resolve1(self):
