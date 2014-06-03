@@ -172,6 +172,18 @@ class OccQueryMixin(object):
 
 
 class OccurrenceSet(OccQueryMixin, QuerySet):
+    def exclude_from(self, obj_queryset):
+        """
+        Excludes from the given queryset any objects with occurrences in this queryset.
+
+        Like restrict, uses a subquery. To guarantee the subquery, passes the Query as
+        the value, rather than the QuerySet (which can sometimes be evaluated and passed
+        as a list, rather than executed as a subquery).
+        """
+        ct = ContentType.objects.get_for_model(obj_queryset.model)
+        queryset = self.filter(rule__table=ct).values_list('object_id')
+        return obj_queryset.exclude(pk__in=queryset.query)
+
     def restrict(self, obj_queryset):
         """
         Restricts the given queryset to only objects with occurrences in this queryset.
@@ -180,29 +192,9 @@ class OccurrenceSet(OccQueryMixin, QuerySet):
         requires much hacking into the internals of the Django ORM (because the models aren't
         explicitly related), so we'll use the subquery here.
         """
-        model = obj_queryset.model
-        ct = ContentType.objects.get_for_model(model)
-        qs = obj_queryset._clone()
-        alias = qs.query.get_initial_alias()
-        occ_alias = self._join(qs, alias, model._meta.pk.column, Occurrence, 'object_id')
-        rule_field = Occurrence._meta.get_field('rule')
-        rule_alias = self._join(qs, occ_alias, rule_field.column, Rule, Rule._meta.pk)
-        ct_field = Rule._meta.get_field('table')
-        qs.query.where.add((Constraint(rule_alias, ct_field.column, ct_field), 'exact', ct.pk), AND)
-        occ_qs = self.query
-        if occ_qs.where:
-            w = deepcopy(occ_qs.where)
-            cmap = {}
-            old_occ_alias, created = occ_qs.table_alias(Occurrence._meta.db_table)
-            if not created and old_occ_alias != occ_alias:
-                cmap[old_occ_alias] = occ_alias
-            old_rule_alias, created = occ_qs.table_alias(Rule._meta.db_table)
-            if not created and old_rule_alias != rule_alias:
-                cmap[old_rule_alias] = rule_alias
-            if cmap:
-                w.relabel_aliases(cmap)
-            qs.query.where.add(w, AND)
-        return list(qs)
+        ct = ContentType.objects.get_for_model(obj_queryset.model)
+        queryset = self.filter(rule__table=ct).values_list('object_id')
+        return obj_queryset.filter(pk__in=queryset.query)
 
     @staticmethod
     def _join(qs, alias, lhs_col, model, field):
