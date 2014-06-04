@@ -162,7 +162,7 @@ class Rule(models.Model):
 
     def get_absolute_url(self):
         """For now we'll just use the admin, but eventually we'll want a view customers can use."""
-        return reverse('admin:rule_reactor_rule_change', kwargs={'object_id': self.pk})
+        return reverse('admin:rule_reactor_rule_change', args=[self.pk])
 
 
 class OccQueryMixin(object):
