@@ -123,6 +123,9 @@ class Rule(models.Model):
 
     objects = RuleManager()
 
+    def __str__(self):
+        return '{0.type}: {0.when}'.format(self)
+
     @property
     def is_system(self):
         return not self.customer_id
@@ -175,6 +178,14 @@ class OccQueryMixin(object):
         table = ContentType.objects.get_for_model(type(obj))
         return self.unresolved().filter(rule__table=table, object_id=obj.pk)
 
+    def for_customer(self, customer):
+        """Returns both system rules and rules belonging to the given customer."""
+        return self.filter(models.Q(rule__customer=customer) | models.Q(rule__customer__isnull=True))
+
+    def system(self):
+        """Returns only system rules (rules without an associated customer)."""
+        return self.filter(rule__customer__isnull=True)
+
 
 class OccurrenceSet(OccQueryMixin, QuerySet):
     def exclude_from(self, obj_queryset):
@@ -201,13 +212,8 @@ class OccurrenceSet(OccQueryMixin, QuerySet):
         queryset = self.filter(rule__table=ct).values_list('object_id')
         return obj_queryset.filter(pk__in=queryset.query)
 
-    @staticmethod
-    def _join(qs, alias, lhs_col, model, field):
-        if hasattr(field, 'column'):
-            rhs_col = field.column
-        else:
-            rhs_col = model._meta.get_field(field).column
-        return qs.query.join((alias, model._meta.db_table, lhs_col, rhs_col))
+    def resolve(self, user, message):
+        return self.update(resolved_by=user, resolution_message=message, resolution_date=timezone.now())
 
 
 class OccurrenceManager(OccQueryMixin, models.Manager):
