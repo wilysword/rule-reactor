@@ -1,18 +1,24 @@
 from copy import deepcopy
+from decimal import Decimal
+from datetime import date, datetime
+import re
 
+from dateutil.parser import parse as parse_date
 from django.db import models
 from django.db.models.query import QuerySet
-from django.db.models.sql.where import Constraint, AND
+from django.db.models.sql.where import Constraint, AND, OR
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.generic import GenericForeignKey
+from django.core.exceptions import ValidationError
 from django.core.validators import validate_email, ValidationError
 from django.core.serializers.python import Serializer, Deserializer
 from django.core.urlresolvers import reverse
-from django.utils import timezone
+from django.utils import six, timezone
 from madlibs.models.fields import DictField, JSONTextField
 
 from falcon.core.models import Customer, Product, User
 from .matchers import MATCHERS
+from .conditions import ConditionTree
 
 
 def validate_email_list(value):
@@ -92,8 +98,7 @@ class Rule(models.Model):
         ('add', 'add'),
         ('edit', 'edit'),
         ('delete', 'delete'),
-        ('exists', 'exists'),
-        ('not exists', 'does not exist'),
+        ('other', 'other'),
     )
     TYPES = (
         ('error', 'error'),
@@ -105,37 +110,41 @@ class Rule(models.Model):
     customer = models.ForeignKey(Customer, blank=True, null=True, related_name='trigger_rules',
                                  help_text='The customer to whom this rule belongs. If null, '
                                  'this is a rule which applies to all customers.')
-    product = models.ForeignKey(Product, blank=True, null=True, related_name='trigger_rules',
-                                help_text='If the rule is associated with a product, it will '
-                                'only match an object when the product_id is provided at '
-                                'match time. This is useful for product-specific required '
-                                'fields, such as SSN for SSA DMF.')
-    message = models.CharField(max_length=255, help_text='A message explaining why the rule '
-                               'was matched, or what a match means.')
+    description = models.CharField(max_length=50, help_text='A short description of the purpose of the rule.')
+    message = models.CharField(max_length=255, blank=True, default='', help_text='A message explaining '
+                               'why the rule was matched, or what a match means, and how to resolve it. '
+                               'May be left blank if description contains sufficient information.')
     emails = JSONTextField(blank=True, default=[], validators=[validate_email_list],
                            help_text='A list of emails of people who should be notified when '
                            'this rule is matched.')
     type = models.CharField(max_length=10, choices=TYPES)
     when = models.CharField(max_length=10, choices=TIMES, help_text='When the rule should be checked.')
-    conditions = DictField(blank=True, default={}, help_text='Additional constraints on how '
-                           'a rule is matched. Valid keys depend on when the rule is checked; '
-                           'see function docstrings in matchers.py for specifics.')
 
     objects = RuleManager()
 
     def __str__(self):
-        return '{0.type}: {0.when}'.format(self)
+        return self.description
 
     @property
     def is_system(self):
         return not self.customer_id
+
+    @property
+    def conditions(self):
+        if '_conditions' not in self.__dict__:
+            self._conditions = ConditionTree(self.condition_set.all())
+        return self._conditions
+
+    @conditions.setter
+    def conditions(self, value):
+        self._conditions = ConditionTree(value)
 
     def _compare_when(self, old_obj, new_obj):
         """
         Ensures the given objects match this rule's 'when', e.g. if only new_obj is given it's
         an add, if only old_obj is given it's a delete, etc.
         """
-        if self.when in ('exists', 'not exists'):
+        if self.when == 'other':
             return bool(new_obj)
         if old_obj and new_obj:
             return self.when == 'edit'
@@ -144,7 +153,7 @@ class Rule(models.Model):
         elif old_obj:
             return self.when == 'delete'
 
-    def match(self, old_obj, new_obj, product_id=None):
+    def match(self, old_obj, new_obj, **extra):
         """
         Matches the given arguments against this rule.
 
@@ -161,11 +170,204 @@ class Rule(models.Model):
         model = self.table.model_class()
         if (old_obj and not isinstance(old_obj, model)) or (new_obj and not isinstance(new_obj, model)):
             return False
-        return MATCHERS[self.when](self, old_obj, new_obj)
+        return self.conditions.evaluate()
 
     def get_absolute_url(self):
         """For now we'll just use the admin, but eventually we'll want a view customers can use."""
         return reverse('admin:rule_reactor_rule_change', args=[self.pk])
+
+
+class ConditionManager(models.Manager):
+    def get_query_set(self):
+        """In most situations, we don't want to see internal conditions."""
+        qs = super(ConditionManager, self).get_query_set()
+        qs.query.add_q(~models.Q(apply_to='int'))
+        return qs
+
+    def _all(self):
+        """If we do need to see internal conditions, start here."""
+        return super(ConditionManager, self).get_query_set()
+
+
+class _ApplyToField(models.CharField):
+    def formfield(self, **kwargs):
+        # The admin uses _APPS, but on most forms we want to hide internal nodes.
+        kwargs.setdefault('choices', APPLICATIONS)
+        return super(_ApplyToField, self).formfield(**kwargs)
+
+
+class Condition(models.Model):
+    COMPARISONS = (
+        ('equal', 'equals'),
+        ('regex', 'matches regular expression'),
+        ('lt', 'is less than'),
+        ('lte', 'is less than or equal to'),
+        ('in', 'is in'),
+        ('exists', 'exists'),
+    )
+    # Use this in user-facing forms
+    APPLICATIONS = (
+        ('old', 'original version'),
+        ('new', 'current version'),
+        ('both', 'both versions'),
+        ('o2n', 'original to current'),
+        ('ext', 'extra data'),
+        ('mod', 'another model'),
+    )
+    # use this for the admin
+    # int is an empty condition representing an internal node in the condition tree.
+    # We collapse these as much as possible to save space in the DB, but there are still
+    # potentially situations that will require them, e.g.:
+    # x AND (i OR j) AND (y OR z) -- (i OR j) can use x as their parent, but that leaves
+    # (y OR z) without a parent, so we rewrite it like this:
+    # x AND (i OR j) AND <empty:True> AND (y OR z)
+    _APPS = APPLICATIONS + (('int', '_internal node_'),)
+
+    rule = models.ForeignKey(Rule)
+    negate = models.BooleanField(default=False)
+    comparison = models.CharField(max_length=10, choices=COMPARISONS, default='exists')
+    field = models.CharField(max_length=150)
+    value = JSONTextField(blank=True, default='')
+    apply_to = _ApplyToField(max_length=4, choices=_APPS)
+    connector = models.CharField(max_length=3, choices=((AND, AND), (OR, OR)), default=AND)
+    parent = models.ForeignKey('Condition', blank=True, null=True, related_name='children')
+
+    objects = ConditionManager()
+
+    def clean(self):
+        errors = {}
+        if self.apply_to == 'mod':
+            is_not_dict = not isinstance(self.value, dict)
+            if self.value and is_not_dict:
+                errors['value'] = ('The "value" on model conditions should be a dict containing '
+                                   'filters; given {}.'.format(self.value))
+            try:
+                assert ContentType.objects.get_by_natural_key(*self.field.split('.')).model_class()
+            except:
+                errors['field'] = ('The "field" on model conditions should be the qualified name '
+                                   'of a model; could not find model {}.'.format(self.field))
+            missing = is_not_dict or not self.value.get('left_field') or not self.value.get('right_field')
+            if self.comparison != 'exists' and missing:
+                errors['value'] = ('For comparisons other than "exists" on model conditions, '
+                                   '"value" must be a dict with a "left_field" key  and a '
+                                   '"right_field" key defining the fields on the object to '
+                                   'compare to the field on the foreign model, respectively, '
+                                   'as well as filters to query the foreign model; '
+                                   'given {0.value} for comparison type {0.comparison}.'.format(self))
+        elif self.apply_to == 'int':
+            self.field = '.'
+            self.value = ''
+        # TODO add checks that fields exist, and that apply_to is valid for the rule's when.
+        if errors:
+            raise ValidationError(errors)
+
+    def _get_mod(self, obj, extra):
+        model = ContentType.objects.get_by_natural_key(*self.field.split('.')).model_class()
+        if self.value:
+            filters = dict(self.value)
+            filters.pop('right_field', None)
+            filters.pop('left_field', None)
+            for key, val in filters.items():
+                if key in extra:
+                    filters[key] = extra[key]
+                elif val is None:
+                    filters[key] = obj.pk if key.endswith('pk') or key.endswith('id') else obj
+            return model.objects.filter(**filters)
+        return model.objects.all()
+
+    def _get_value(self, obj, i=0, keys=None):
+        if keys is None:
+            keys = self.field.split('.')
+        if i >= len(keys):
+            return obj
+        elif not keys[i] or obj is None:
+            return None
+        elif isinstance(obj, dict):
+            nobj = obj.get(keys[i])
+        else:
+            nobj = getattr(obj, keys[i], None)
+        return self._get_value(nobj() if callable(nobj) else nobj, i + 1, keys)
+
+    def _try_match_type(self, left, right):
+        if isinstance(right, six.string_types) and not isinstance(left, six.string_types):
+            try:
+                if isinstance(left, int):
+                    right = int(right)
+                elif isinstance(left, float):
+                    right = float(right)
+                elif isinstance(left, Decimal):
+                    right = Decimal(right)
+                # have to check datetime before date, because datetime objects are also date instances
+                elif isinstance(left, datetime):
+                    right = parse_date(right)
+                    # Assume local time
+                    if timezone.is_aware(left) and timezone.is_naive(right):
+                        right = timezone.make_aware(right, timezone.get_current_timezone())
+                    elif timezone.is_naive(left) and timezone.is_aware(right):
+                        right = timezone.make_naive(right, timezone.get_current_timezone())
+                elif isinstance(left, date):
+                    right = parse_date(right).date()
+            except:
+                pass
+        return left, right
+
+    def _eval(self, left, right):
+        left, right = self._try_match_type(left, right)
+        if self.comparison == 'equal':
+            result = left == right
+        elif self.comparison == 'regex':
+            result = re.search(right, left)
+        elif self.comparison == 'lt':
+            result = left < right
+        elif self.comparison == 'lte':
+            result = left <= right
+        elif self.comparison == 'in':
+            result = left in right
+        elif self.comparison == 'exists':
+            try:
+                result = left.exists()
+            except AttributeError:
+                result = bool(left)
+        else:
+            raise NotImplementedError('Comparison type {}'.format(self.comparison))
+        return not result if self.negate else result
+
+    def _compare(self, left, right):
+        lfield = rfield = None
+        if isinstance(self.value, dict):
+            if 'left_field' in self.value:
+                lfield = self.value['left_field'].split('.')
+            if 'right_field' in self.value:
+                rfield = self.value['right_field'].split('.')
+        left_val = self._get_value(left, keys=lfield)
+        right_val = self._get_value(right, keys=rfield)
+        return self._eval(left_val, right_val)
+
+    def evaluate(self, old_obj, new_obj, extra):
+        if self.apply_to == 'int':
+            # We don't want this to affect the final result, so we return True for AND
+            # and False for OR; that way the result will be determined by other nodes.
+            return self.connector == AND
+        elif self.apply_to == 'mod':
+            obj = new_obj or old_obj
+            qs = self._get_mod(obj, extra)
+            if self.comparison != 'exists':
+                try:
+                    return self._compare(obj, qs.get())
+                except (qs.model.DoesNotExist, qs.model.MultipleObjectsReturned):
+                    return not self.negate
+            return self._eval(right, None)
+        elif self.apply_to == 'ext':
+            return self._eval(self._get_value(extra), self.value)
+        elif self.apply_to == 'o2n':
+            return self._compare(old_obj, new_obj)
+        elif self.apply_to in ('old', 'new', 'both'):
+            # only check old if apply_to isn't 'new'
+            old = self.apply_to == 'new' or self._eval(self._get_value(old), self.value)
+            # only check new if apply_to isn't 'old'
+            new = self.apply_to == 'old' or self._eval(self._get_value(new), self.value)
+            return old and new
+        raise NotImplementedError('Application type {}'.format(self.apply_to))
 
 
 class OccQueryMixin(object):
