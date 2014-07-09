@@ -3,6 +3,8 @@ import re
 from django.utils import tree
 from django.contrib.contenttypes.models import ContentType
 
+__all__ = ['AND', 'OR', 'ConditionNode', 'Condition', 'get_value']
+
 AND = 'AND'
 OR = 'OR'
 
@@ -10,21 +12,12 @@ OR = 'OR'
 class ConditionNode(tree.Node):
     default = AND
 
-    def _add(self, node, conn_type):
-        """
-        This version of add is intended for constructing a condition tree from a data
-        source (e.g. the database); thus, it adds validation on the connector.
-        """
-        if len(self.children) >= 1 and conn_type != self.connector:
-            raise ValueError('Mismatched connectors adding {} to {}'.format(node, self))
-        self.add(node, conn_type)
-
     def evaluate(self, *objects, **extra):
         return self._evaluate(objects, extra)
 
     def _evaluate(self, objects, extra):
         test = all if self.connector == AND else any
-        return test(child._evaluate(objects, extra) for child in children)
+        return test(child._evaluate(objects, extra) for child in self.children)
 
     def negate(self):
         # !(x & y & z) = (!x | !y | !z)
@@ -32,19 +25,19 @@ class ConditionNode(tree.Node):
         for c in self.children:
             c.negate()
         self.children = [self._new_instance(self.children, connector)]
-        self.connector = default
+        self.connector = self.default
 
     def collapse(self):
         """Removes unnecessary nodes, returning the minimum number of nodes for this tree."""
         c = self.children
-        if len(self.children) > 0:
+        if len(c) > 0:
             i = 0
             while i < len(c):
                 if isinstance(c[i], ConditionNode):
                     child = c[i]
                     child.collapse()
-                    if len(child.children) == 0 or child.connector == self.connector:
-                        children.pop(i)
+                    if len(child.children) < 2 or child.connector == self.connector:
+                        c.pop(i)
                         c.extend(child.children)
                         continue
                 i += 1
@@ -63,7 +56,11 @@ class ConditionNode(tree.Node):
 
     def __or__(self, other):
         ored = copy.deepcopy(self)
-        return order.__ior__(other)
+        return ored.__ior__(other)
+
+    # Order doesn't matter in boolean logic (assuming you aren't relying on short-circuiting).
+    __rand__ = __and__
+    __ror__ = __or__
 
     def __iand__(self, other):
         self.add(other, AND)
@@ -118,17 +115,25 @@ class Condition(object):
 
     @classmethod
     def parse_kwarg(cls, key, value):
-        result = {'right': 'const', 'value': value}
+        result = {}
         parts = key.split('__')
         if parts[0].startswith('o'):
             parts[0] = parts[0].strip('o')
             assert parts[0].isdigit()
         else:
             parts.insert(0, 'extra')
+
         if parts[-1] in cls.KWARG_OP_MAP:
             result['operator'] = cls.KWARG_OP_MAP[parts.pop()]
         else:
             result['operator'] = '=='
+
+        if result['operator'] == 'bool':
+            result['negated'] = not value
+        else:
+            result['value'] = value
+            result['right'] = 'const'
+
         result['left'] = '.'.join(parts)
         return result
 
@@ -155,7 +160,7 @@ class Condition(object):
             elif isinstance(a, cls) or isinstance(a, ConditionNode):
                 conditions.append(a)
             else:
-                raise ValueError('Invalid positional argument: {}'.format(a))
+                raise ValueError('Invalid positional argument: {}'.format(repr(a)))
         args = cls.parse_kwargs(kwargs)
         conditions.extend(cls(**a) for a in args)
         return ConditionNode(conditions)
@@ -168,7 +173,7 @@ class Condition(object):
         operator = kwargs['operator']
         self.left = kwargs['left']
         right = kwargs.get('right') or ''
-        self.negated = kwargs.get('negated') or False
+        self.negated = bool(kwargs.get('negated'))
         if operator in self.NEGATED_OPERATOR_MAP:
             self.negate()
         if operator in self.OPERATOR_MAP:
@@ -244,7 +249,9 @@ class Condition(object):
     def _select(self, selector, objects, extra):
         s = selector.split('.')
         stype, field = s[0], s[1:]
-        if stype.isdigit():
+        if not stype:
+            obj = None
+        elif stype.isdigit():
             obj = objects[int(stype)]
         elif stype == 'extra':
             obj = extra
@@ -256,27 +263,3 @@ class Condition(object):
         else:
             raise NotImplementedError('Unknown selector type: "{}"'.format(stype))
         return obj, field
-
-
-def ConditionTree(conditions):
-    if isinstance(conditions, ConditionNode):
-        return conditions
-    if not conditions:
-        return ConditionNode()
-    ids = set(c.pk for c in conditions)
-    pids = set(c.parent_id for c in conditions if c.parent_id)
-    if pids - ids:
-        raise ValueError('Missing parents: {}'.format(pids - ids))
-    nodes = {c.pk: ConditionNode() for c in conditions if c.pk in pids}
-    rule = None
-    root = ConditionNode()
-    for condition in conditions:
-        if rule is None:
-            rule = condition.rule_id
-        elif rule != condition.rule_id:
-            raise ValueError('All conditions in a tree must come from the same rule')
-        parent = nodes.get(condition.parent_id, root)
-        parent.add(condition, condition.connector)
-        if condition.pk in nodes:
-            parent.add(nodes[condition.pk], condition.connector)
-    return root
