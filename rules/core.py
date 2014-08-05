@@ -113,11 +113,8 @@ class Condition(object):
         unknown = [repr(k) for k in kwargs if k not in self.KWARGS]
         if unknown:
             raise TypeError('{} are invalid keyword arguments for this function'.format(unknown))
-        if not isinstance(kwargs.get('left'), DeferredValue):
-            raise ValueError('Condition.left must be a deferred value type')
-        self.left = kwargs['left']
         self.negated = bool(kwargs.get('negated'))
-        operator = kwargs['operator']
+        operator = kwargs.get('operator')
         if operator in self.NEGATED_OPERATOR_MAP:
             self.negate()
         if operator in self.OPERATOR_MAP:
@@ -126,13 +123,18 @@ class Condition(object):
             self.operator = operator
         else:
             raise NotImplementedError('Unknown operator: "{}"'.format(operator))
-        right = kwargs.get('right') or ''
+        # We keep a copy of the original for serialization.
+        self._left = left = kwargs.get('left')
+        self._right = right = kwargs.get('right')
+        if not isinstance(left, DeferredValue):
+            raise ValueError('Condition.left must be a deferred value type')
         if self.operator != 'bool' and not right:
             msg = 'Condition.right is required unless using the bool/exists operator.'
             raise ValueError(msg)
         elif not isinstance(right, DeferredValue):
             raise ValueError('Condition.right must be a deferred value type')
-        self.right = right
+        self.left = left.maybe_const()
+        self.right = right and right.maybe_const()
 
     def __str__(self):
         fmt = '{} {}'
@@ -173,14 +175,19 @@ class Condition(object):
     def _evaluate(self, info):
         try:
             try:
-                left = self.left.get_value(info)
-                right = None
-                if self.right:
-                    right = self.right.get_value(info)
+                left = self.left
+                if isinstance(left, DeferredValue):
+                    left = left.get_value(info)
+                right = self.right
+                if isinstance(self.right, DeferredValue):
+                    right = right.get_value(info)
             except ChainError:
-                if self.operator == 'bool':
-                    return not self.negated
-            result = self._eval(left, right)
+                # A chain error with bool operator is assumed to mean the value is None.
+                if self.operator != 'bool':
+                    raise
+                result = False
+            else:
+                result = self._eval(left, right)
             return not result if self.negated else result
         except:
             return False

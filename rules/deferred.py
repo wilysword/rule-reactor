@@ -14,14 +14,19 @@ class DeferredValue(object):
     def __subclasshook__(cls, test):
         if cls is DeferredValue:
             get_value = getattr(test, 'get_value', None)
-            if callable(get_value):
+            maybe_const = getattr(test, 'maybe_const', None)
+            if callable(get_value) and callable(maybe_const):
                 try:
-                    code = get_value.im_func.func_code
-                    expected = ('self', 'info')
-                    return code.co_varnames[:code.co_argcount] == expected
+                    gv_code = get_value.im_func.func_code
+                    mc_code = maybe_const.im_func.func_code
+                    return gv_code.co_argcount == 2 and mc_code.co_argcount == 1
                 except:
                     pass
         return NotImplemented
+
+    @abc.abstractmethod
+    def maybe_const(self):
+        return self
 
     @abc.abstractmethod
     def _get_value(self, info):
@@ -44,6 +49,18 @@ class DeferredValue(object):
 class DeferredDict(dict, DeferredValue):
     __slots__ = ()
 
+    def maybe_const(self):
+        result = {}
+        items = self.items() if six.PY3 else self.iteritems()
+        for k, v in items:
+            if isinstance(v, DeferredValue):
+                v = v.maybe_const()
+            # If there's even one deferred value left, this can't be a const.
+            if isinstance(v, DeferredValue):
+                return self
+            result[k] = v
+        return result
+
     def _get_value(self, info):
         items = self.items() if six.PY3 else self.iteritems()
         return {k: v.get_value(info) if isinstance(v, DeferredValue) else v for k, v in items}
@@ -51,6 +68,17 @@ class DeferredDict(dict, DeferredValue):
 
 class DeferredList(list, DeferredValue):
     __slots__ = ()
+
+    def maybe_const(self):
+        result = []
+        for v in self:
+            if isinstance(v, DeferredValue):
+                v = v.maybe_const()
+            # If there's even one deferred value left, this can't be a const.
+            if isinstance(v, DeferredValue):
+                return self
+            result.append(v)
+        return result
 
     def _get_value(self, info):
         return [x.get_value(info) if isinstance(x, DeferredValue) else x for x in self]
@@ -65,7 +93,7 @@ class Selector(DeferredValue):
 
     def __init__(self, selector_type, chain):
         self.stype = selector_type
-        self.chain = chain
+        self.chain = chain.maybe_const() if isinstance(chain, DeferredValue) else chain
         if isinstance(selector_type, (list, tuple)):
             self.set_first(*selector_type)
         else:
@@ -91,6 +119,14 @@ class Selector(DeferredValue):
             self.first = lambda info: m
         else:
             raise NotImplementedError('Unknown selector type: "{}"'.format(stype))
+
+    def maybe_const(self):
+        if isinstance(self.stype, (list, tuple)):
+            if self.stype[0] == 'const' or (self.stype[0] == 'model' and not self.chain):
+                return self.first(None)
+        elif isinstance(self.stype, DeferredValue) and not self.chain:
+            return self.stype.maybe_const()
+        return self
 
     def _get_value(self, info):
         try:
@@ -159,7 +195,12 @@ class Function(DeferredValue):
             raise ValueError('"{}" is not a recognized function.'.format(func))
         self.func = self.FUNCS[func]
         self.name = func
-        self.args = args if isinstance(args, DeferredValue) else DeferredList(args)
+        self.args = args.maybe_const() if isinstance(args, DeferredValue) else args
+
+    def maybe_const(self):
+        if not isinstance(self.args, DeferredValue):
+            return self.func(*self.args)
+        return self
 
     def _get_value(self, info):
         args = self.args.get_value(info)
