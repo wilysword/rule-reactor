@@ -85,8 +85,8 @@ class BaseRule(models.Model):
             self._build_tree(self.tree)
         return self._tree
 
-    @tree.setter
-    def tree(self, value):
+    @conditions.setter
+    def conditions(self, value):
         self._build_tree(value)
         #TODO self.tree = self._tree.to_str()
 

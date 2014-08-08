@@ -34,8 +34,7 @@ sys.path.insert(0, root)
 version = __import__('rules').get_version()
 del sys.path[0]
 
-#TODO implement download_url based on version
-download_url = 'http://packages.corp.verisys.com/rule-reactor-{}.tar.gz'.format(version)
+download_url = 'http://packages.corp.verisys.com/eggs/rule-reactor-{}.tar.gz'.format(version)
 
 setup(
     name='rules',
@@ -48,5 +47,5 @@ setup(
     packages=packages,
     data_files=data_files,
     # TODO how do we specify where to get mablibs?
-    install_requires=('django>=1.4.6', 'madlibs')
+    install_requires=('django>=1.4.6', 'madlibs', 'six>=1.6')
 )
