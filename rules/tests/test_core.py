@@ -8,16 +8,13 @@ from rules.deferred import Function, Selector, DeferredDict
 
 
 class TestCondition(TestCase):
-    def test_neg_op_map(self):
-        nom = {'!=': '==', 'not like': 're', 'not in': 'in',
-               '>=': '<', 'does not exist': 'bool', '>': '<='}
-        self.assertEqual(Condition.NEGATED_OPERATOR_MAP, nom)
+    def test_neg_ops(self):
+        nops = {'not like': 'like', 'does not exist': 'exists', 'not in': 'in'}
+        self.assertEqual(Condition.NEGATED_OPERATORS, nops)
 
     def test_op_map(self):
-        om = {'!=': '==', '==': '==', 'like': 're', 'not like': 're', 'not in': 'in',
-              'in': 'in', '>=': '<', '<=': '<=', 'does not exist': 'bool', '>': '<=',
-              'exists': 'bool', '<': '<'}
-        self.assertEqual(Condition.OPERATOR_MAP, om)
+        om = {'!=', '==', 'like', 're', 'in', '>=', '<', '<=', '>', 'bool', 'exists'}
+        self.assertEqual(set(Condition.OPERATOR_MAP), om)
 
     def test_kwargs(self):
         kwargs = set(('left', 'right', 'negated', 'operator'))
@@ -27,7 +24,6 @@ class TestCondition(TestCase):
         unaries = ('bool', 'exists', 'does not exist')
         self.assertEqual(set(unaries), Condition.UNARY_OPERATORS)
         ops = set(Condition.OPERATOR_MAP)
-        ops.update(Condition.OPERATOR_MAP.values())
         for o in ops:
             assertion = self.assertTrue if o in unaries else self.assertFalse
             assertion(Condition.is_unary(o))
@@ -59,14 +55,10 @@ class TestCondition(TestCase):
     def test_init_operator(self):
         kwargs = {'left': Function('percent', (30, 100)), 'right': Function('max', (1, 2))}
         ops = set(Condition.OPERATOR_MAP)
-        ops.update(Condition.OPERATOR_MAP.values())
         for op in ops:
             c = Condition(operator=op, **kwargs)
-            if op in Condition.OPERATOR_MAP:
-                self.assertEqual(c.operator, Condition.OPERATOR_MAP[op])
-            else:
-                self.assertEqual(c.operator, op)
-            self.assertIs(c.negated, op in Condition.NEGATED_OPERATOR_MAP)
+            self.assertIs(c._eval, Condition.OPERATOR_MAP[op])
+            self.assertIs(c.negated, op in Condition.NEGATED_OPERATORS)
         self.assertRaises(NotImplementedError, Condition, operator='*', **kwargs)
 
     def test_init_right(self):
@@ -99,8 +91,8 @@ class TestConditionMethods(CollectMixin, TestCase):
     def test_str(self):
         c = self.c()
         self.assertEqual(str(c), '0 == 1')
-        c = self.c(operator='!=')
-        self.assertEqual(str(c), 'NOT 0 == 1')
+        c = self.c(operator='not like')
+        self.assertEqual(str(c), 'NOT 0 like 1')
         c = self.c(operator='bool')
         self.assertEqual(str(c), '0 bool')
 

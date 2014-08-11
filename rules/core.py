@@ -1,7 +1,9 @@
 import copy
+import operator
 
 from django.utils import tree
 
+from .continuations import ContinuationStore
 from .deferred import DeferredValue, ChainError
 
 __all__ = ['AND', 'OR', 'ConditionNode', 'Condition']
@@ -72,63 +74,83 @@ class ConditionNode(tree.Node):
         return self
 
 
+class _unary_descriptor(object):
+    __slots__ = ()
+    def __get__(self, instance, owner):
+        UOPS = owner.UNARY_OPERATORS
+        if instance is not None:
+            return instance.op in UOPS
+        return lambda op: op in UOPS
+
+
+def _exists(left, right):
+    try:
+        # Efficiency improvement for querysets.
+        return left.exists()
+    except AttributeError:
+        return bool(left)
+
+
+def _like(left, right):
+    return right.match(left)
+
+
 class Condition(object):
-    NEGATED_OPERATOR_MAP = {
-        '!=': '==',
-        'not like': 're',
-        '>': '<=',
-        '>=': '<',
-        'does not exist': 'bool',
-        'not in': 'in'
-    }
-    OPERATOR_MAP = {
-        '==': '==',
-        'like': 're',
-        'exists': 'bool',
-        '<=': '<=',
-        '<': '<',
-        'in': 'in'
-    }
-    OPERATOR_MAP.update(NEGATED_OPERATOR_MAP)
+    NEGATED_OPERATORS = {'not like': 'like', 'does not exist': 'exists', 'not in': 'in'}
     UNARY_OPERATORS = {'bool', 'exists', 'does not exist'}
+    OPERATOR_MAP = {
+        '==': operator.eq,
+        '!=': operator.ne,
+        '<=': operator.le,
+        '<': operator.lt,
+        '>=': operator.ge,
+        '>': operator.gt,
+        'like': _like,
+        're': _like,
+        'exists': _exists,
+        'bool': _exists,
+        'in': lambda l, r: l in r,
+    }
 
     KWARGS = ('left', 'right', 'operator', 'negated')
+
+    Node = ConditionNode
 
     @classmethod
     def C(cls, *args):
         conditions = []
+        Node = cls.Node
         for a in args:
             if isinstance(a, dict):
                 conditions.append(cls(**a))
-            elif isinstance(a, cls) or isinstance(a, ConditionNode):
+            elif isinstance(a, cls) or isinstance(a, Node):
                 conditions.append(a)
             else:
                 raise ValueError('Invalid positional argument: {}'.format(repr(a)))
-        return ConditionNode(conditions)
+        return Node(conditions)
 
-    @classmethod
-    def is_unary(cls, operator):
-        return operator in cls.UNARY_OPERATORS
+    is_unary = _unary_descriptor()
 
     def __init__(self, **kwargs):
         unknown = [k for k in kwargs if k not in self.KWARGS]
         if unknown:
             raise TypeError('{} are invalid keyword arguments for this function'.format(unknown))
         self.negated = bool(kwargs.get('negated'))
+
         operator = kwargs.get('operator')
-        if operator in self.NEGATED_OPERATOR_MAP:
+        if operator in self.NEGATED_OPERATORS:
             self.negate()
-        if operator in self.OPERATOR_MAP:
-            self.operator = self.OPERATOR_MAP[operator]
-        elif operator in self.OPERATOR_MAP.values():
-            self.operator = operator
-        else:
+            operator = self.NEGATED_OPERATORS[operator]
+        elif operator not in self.OPERATOR_MAP:
             raise NotImplementedError('Unknown operator: "{}"'.format(operator))
+        self.op = operator
+        self._eval = self.OPERATOR_MAP[operator]
+
         left = kwargs.get('left')
         right = kwargs.get('right')
         if not isinstance(left, DeferredValue):
             raise ValueError('Condition.left must be a deferred value type')
-        if not self.is_unary(self.operator) and not right:
+        if not self.is_unary and not right:
             msg = 'Condition.right is required unless using a unary operator.'
             raise ValueError(msg)
         elif right and not isinstance(right, DeferredValue):
@@ -140,32 +162,12 @@ class Condition(object):
         fmt = '{} {}'
         if self.negated:
             fmt = 'NOT ' + fmt
-        if not self.is_unary(self.operator):
+        if not self.is_unary:
             fmt += ' {}'
-        return fmt.format(self.left, self.operator, self.right)
+        return fmt.format(self.left, self.op, self.right)
 
     def negate(self):
         self.negated = not self.negated
-
-    def _eval(self, left, right):
-        if self.operator == '==':
-            result = left == right
-        elif self.operator == 're':
-            # Reversed operands to reflect the semantic: <left> like pattern <right>.
-            result = bool(right.match(left))
-        elif self.operator == '<':
-            result = left < right
-        elif self.operator == '<=':
-            result = left <= right
-        elif self.operator == 'in':
-            result = left in right
-        elif self.operator == 'bool':
-            try:
-                # Efficiency improvement for querysets.
-                result = left.exists()
-            except AttributeError:
-                result = bool(left)
-        return result
 
     def evaluate(self, *objects, **extra):
         return self._evaluate({'objects': objects, 'extra': extra})
@@ -181,11 +183,51 @@ class Condition(object):
                     right = right.get_value(info)
             except ChainError:
                 # A chain error with bool operator is assumed to mean the value is None.
-                if self.operator != 'bool':
+                if not self.is_unary:
                     raise
                 result = False
             else:
                 result = self._eval(left, right)
-            return not result if self.negated else result
+                if result is NotImplemented:  # pragma: no cover
+                    msg = 'Comparing {} and {} with {} operator'
+                    raise NotImplementedError(msg.format(type(left), type(right), self.op))
+            return not result if self.negated else bool(result)
         except:
             return False
+
+
+class Rule(object):
+    Condition = Condition
+    continuations = ContinuationStore.default
+
+    def __init__(self, **kwargs):
+        self.value = kwargs.pop('value', None)
+        self.conditions = self._build_tree(kwargs.pop('conditions', None))
+        self.continuation = kwargs.pop('continuation', None)
+        if 'Condition' in kwargs:
+            self.Condition = kwargs.pop('Condition')
+        if 'continuations' in kwargs:
+            self.continuations = kwargs.pop('continuations')
+
+    def _build_tree(self, conditions):
+        Node = self.Condition.Node
+        if isinstance(conditions, Node):
+            return conditions
+        elif not conditions:
+            # Make it so the rule is never matched.
+            return Node(connector=OR)
+        else:
+            # TODO parse
+            return root
+
+    def match(self, *objects, **extra):
+        """Matches the given arguments against this rule."""
+        return self._match({'objects': objects, 'extra': extra})
+
+    def _match(self, info):
+        if self.conditions._evaluate(info):
+            store = info.get('continuations') or self.continuations
+            cont = store[self.continuation]
+            cont(self, info, self.value)
+            return True
+        return False
