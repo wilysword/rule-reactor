@@ -213,6 +213,14 @@ class TestSelector(TestCase):
         x = s.get_value({'objects': ['random']})
         self.assertEqual(len(x), 0)
 
+    def test_str(self):
+        s = Selector(('model', 'contenttypes.contenttype'), ('objects', 'all'))
+        self.assertEqual(str(s), 'model:contenttypes.contenttype.objects.all')
+        s = Selector(('const', 3), None)
+        self.assertEqual(str(s), 'const:3')
+        s = Selector(s, ('hello',))
+        self.assertEqual(str(s), 'const:3.hello')
+
 
 class TestFunction(TestCase):
     def test_init(self):

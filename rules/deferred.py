@@ -111,6 +111,15 @@ class Selector(DeferredValue):
         else:
             raise NotImplementedError('Unknown selector type: "{}"'.format(stype))
 
+    def __str__(self):
+        stype = self.stype
+        if isinstance(stype, (list, tuple)):
+            stype = ':'.join(str(x) for x in stype)
+        chain = self.chain or ''
+        if chain:
+            chain = '.' + '.'.join(str(y) for y in chain)
+        return '{}{}'.format(stype, chain)
+
     def maybe_const(self):
         if isinstance(self.stype, (list, tuple)):
             if self.stype[0] == 'const' or (self.stype[0] == 'model' and not self.chain):

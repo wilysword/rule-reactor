@@ -90,6 +90,7 @@ class Condition(object):
         'in': 'in'
     }
     OPERATOR_MAP.update(NEGATED_OPERATOR_MAP)
+    UNARY_OPERATORS = {'bool', 'exists', 'does not exist'}
 
     KWARGS = ('left', 'right', 'operator', 'negated')
 
@@ -107,10 +108,10 @@ class Condition(object):
 
     @classmethod
     def is_unary(cls, operator):
-        return operator in ('bool', 'exists', 'does not exist')
+        return operator in cls.UNARY_OPERATORS
 
     def __init__(self, **kwargs):
-        unknown = [repr(k) for k in kwargs if k not in self.KWARGS]
+        unknown = [k for k in kwargs if k not in self.KWARGS]
         if unknown:
             raise TypeError('{} are invalid keyword arguments for this function'.format(unknown))
         self.negated = bool(kwargs.get('negated'))
@@ -123,15 +124,14 @@ class Condition(object):
             self.operator = operator
         else:
             raise NotImplementedError('Unknown operator: "{}"'.format(operator))
-        # We keep a copy of the original for serialization.
-        self._left = left = kwargs.get('left')
-        self._right = right = kwargs.get('right')
+        left = kwargs.get('left')
+        right = kwargs.get('right')
         if not isinstance(left, DeferredValue):
             raise ValueError('Condition.left must be a deferred value type')
-        if self.operator != 'bool' and not right:
-            msg = 'Condition.right is required unless using the bool/exists operator.'
+        if not self.is_unary(self.operator) and not right:
+            msg = 'Condition.right is required unless using a unary operator.'
             raise ValueError(msg)
-        elif not isinstance(right, DeferredValue):
+        elif right and not isinstance(right, DeferredValue):
             raise ValueError('Condition.right must be a deferred value type')
         self.left = left.maybe_const()
         self.right = right and right.maybe_const()
@@ -140,7 +140,7 @@ class Condition(object):
         fmt = '{} {}'
         if self.negated:
             fmt = 'NOT ' + fmt
-        if self.right:
+        if not self.is_unary(self.operator):
             fmt += ' {}'
         return fmt.format(self.left, self.operator, self.right)
 
@@ -165,8 +165,6 @@ class Condition(object):
                 result = left.exists()
             except AttributeError:
                 result = bool(left)
-        else:
-            raise NotImplementedError('Comparison type {}'.format(self.operator))
         return result
 
     def evaluate(self, *objects, **extra):

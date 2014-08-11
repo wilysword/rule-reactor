@@ -1,76 +1,13 @@
-from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import FieldError
-from django.db import models
+import datetime
+
 from django.test import TestCase
-from django.test.utils import override_settings
-from model_mommy import mommy
 from madlibs.test_utils import CollectMixin
 
-from rules.core import AND, OR, get_value, ConditionNode, Condition
+from rules.core import AND, OR, ConditionNode, Condition
+from rules.deferred import Function, Selector, DeferredDict
 
 
-class Object(models.Model):
-    str1 = models.CharField(max_length=100, blank=True, null=True)
-    str2 = models.CharField(max_length=100, blank=True, null=True)
-    bool = models.NullBooleanField()
-    int = models.IntegerField(blank=True, null=True)
-    float = models.FloatField(blank=True, null=True)
-    decimal = models.DecimalField(decimal_places=10, max_digits=20, blank=True, null=True)
-
-    class Meta:
-        app_label = 'rules'
-
-class Base(CollectMixin, TestCase):
-    def prep(self, **kwargs):
-        kwargs = self._collect('kwargs', kwargs)
-        return mommy.prepare(Object, **kwargs)
-
-    def make(self, **kwargs):
-        kwargs = self._collect('kwargs', kwargs)
-        return mommy.make(Object, **kwargs)
-
-    def c(self, **kwargs):
-        return Condition(**self._collect('defaults', kwargs))
-
-    def C(self, *args, **kwargs):
-        return Condition.C(*args, **kwargs)
-
-
-class TestGetValue(Base):
-    def test_simple(self):
-        c = ['str1', 'str2']
-        o = self.prep(str1='1', str2='2')
-        self.assertEqual(get_value(o, c, i=1), '2')
-        self.assertEqual(get_value(o, c[:1]), '1')
-
-    def test_dict_chain(self):
-        c = ['str1', 'str2']
-        o = {'str1': '1', 'str2': '2'}
-        self.assertEqual(get_value(o, c, i=1), '2')
-        self.assertEqual(get_value(o, c[:1]), '1')
-
-    def test_length(self):
-        c = []
-        self.assertIs(get_value(c, c, i=0), c)
-        self.assertIs(get_value(c, c, i=1), c)
-
-    def test_callable(self):
-        c = ['objects', 'get']
-        o = self.make()
-        self.assertEqual(get_value(Object, c).pk, o.pk)
-
-    def test_skip(self):
-        c = ['', 'objects', '', 'get']
-        o = self.make()
-        self.assertEqual(get_value(Object, c).pk, o.pk)
-
-    def test_nonexistent(self):
-        c = ['str1', 'strip', 'ugabuga', 'hello']
-        o = self.prep()
-        self.assertIs(get_value(o, c), None)
-
-
-class TestCondition(Base):
+class TestCondition(TestCase):
     def test_neg_op_map(self):
         nom = {'!=': '==', 'not like': 're', 'not in': 'in',
                '>=': '<', 'does not exist': 'bool', '>': '<='}
@@ -83,69 +20,163 @@ class TestCondition(Base):
         self.assertEqual(Condition.OPERATOR_MAP, om)
 
     def test_kwargs(self):
-        kwargs = set(('left', 'right', 'value', 'negated', 'operator'))
+        kwargs = set(('left', 'right', 'negated', 'operator'))
         self.assertEqual(set(Condition.KWARGS), kwargs)
 
-    def test_kwarg_op_map(self):
-        kom = {'lt': '<', 'lte': '<=', 'gt': '>', 'gte': '>=',
-               'exists': 'bool', 'like': 're', 'in': 'in'}
-        self.assertEqual(Condition.KWARG_OP_MAP, kom)
+    def test_is_unary(self):
+        unaries = ('bool', 'exists', 'does not exist')
+        self.assertEqual(set(unaries), Condition.UNARY_OPERATORS)
+        ops = set(Condition.OPERATOR_MAP)
+        ops.update(Condition.OPERATOR_MAP.values())
+        for o in ops:
+            assertion = self.assertTrue if o in unaries else self.assertFalse
+            assertion(Condition.is_unary(o))
 
-    def test_parse_kwarg(self):
-        v = complex(4, 5)
-        key = 'o234__gg'
-        result = {'left': '234.gg', 'right': 'const', 'value': v, 'operator': '=='}
-        self.assertEqual(Condition.parse_kwarg(key, v), result)
-        key = 'hello__gg'
-        result['left'] = 'extra.hello.gg'
-        self.assertEqual(Condition.parse_kwarg(key, v), result)
-        # Unrecognized operator...
-        key = 'hello__gg__not_exists'
-        result['operator'] = '=='
-        result['left'] = 'extra.hello.gg.not_exists'
-        self.assertEqual(Condition.parse_kwarg(key, v), result)
-        key = 'hello__gg__exists'
-        result = {'operator': 'bool', 'left': 'extra.hello.gg', 'negated': not v}
-        self.assertEqual(Condition.parse_kwarg(key, v), result)
+    def test_init(self):
+        self.assertRaises(TypeError, Condition, random_kwarg='random value')
+
+    def test_init_left(self):
+        self.assertRaises(ValueError, Condition, operator='bool', left=30)
+        l = Function('percent', (30, 100))
+        c = Condition(left=l, operator='bool')
+        self.assertEqual(c.left, 30)
+        self.assertIs(c.right, None)
+        l = Selector(0, None)
+        c = Condition(left=l, operator='bool')
+        self.assertIs(c.left, l)
+
+    def test_init_negated(self):
+        kwargs = {'operator': 'bool', 'left': Function('percent', (30, 100))}
+        c = Condition(**kwargs)
+        self.assertIs(c.negated, False)
+        c = Condition(negated=True, **kwargs)
+        self.assertIs(c.negated, True)
+        c = Condition(negated={}, **kwargs)
+        self.assertIs(c.negated, False)
+        c = Condition(negated=[1], **kwargs)
+        self.assertIs(c.negated, True)
+
+    def test_init_operator(self):
+        kwargs = {'left': Function('percent', (30, 100)), 'right': Function('max', (1, 2))}
+        ops = set(Condition.OPERATOR_MAP)
+        ops.update(Condition.OPERATOR_MAP.values())
+        for op in ops:
+            c = Condition(operator=op, **kwargs)
+            if op in Condition.OPERATOR_MAP:
+                self.assertEqual(c.operator, Condition.OPERATOR_MAP[op])
+            else:
+                self.assertEqual(c.operator, op)
+            self.assertIs(c.negated, op in Condition.NEGATED_OPERATOR_MAP)
+        self.assertRaises(NotImplementedError, Condition, operator='*', **kwargs)
+
+    def test_init_right(self):
+        l = Selector(0, None)
+        r = Selector(('const', 5), None)
+        self.assertRaises(ValueError, Condition, left=l, operator='in')
+        self.assertRaises(ValueError, Condition, left=l, operator='in', right=[2, 3])
+        c = Condition(left=l, right=r, operator='==')
+        self.assertEqual(c.right, 5)
+        r = Selector(1, None)
+        c = Condition(left=l, right=r, operator='==')
+        self.assertIs(c.right, r)
+
+    def test_C_shortcut(self):
+        l = r = Selector(0, None)
+        kwargs = {'left': l, 'right': r, 'operator': '=='}
+        cn = Condition.C(kwargs, Condition(**kwargs))
+        self.assertEqual(len(cn), 2)
+        self.assertEqual(cn.connector, ConditionNode.default)
+        self.assertEqual(len(Condition.C()), 0)
+        self.assertRaises(ValueError, Condition.C, [1, 2])
 
 
-class TestGetMod(Base):
-    defaults = {'left': 'model.rules.object', 'operator': 'bool'}
-    kwargs = {'str1': 'hello', 'int': 5}
+class TestConditionMethods(CollectMixin, TestCase):
+    defaults = {'left': Selector(0, None), 'right': Selector(1, None), 'operator': '=='}
 
-    def test_bad_field(self):
+    def c(self, **kwargs):
+        return Condition(**self._collect('defaults', kwargs))
+
+    def test_str(self):
         c = self.c()
-        self.assertRaises(TypeError, c._get_mod, ('skgjfks',), {})
+        self.assertEqual(str(c), '0 == 1')
+        c = self.c(operator='!=')
+        self.assertEqual(str(c), 'NOT 0 == 1')
+        c = self.c(operator='bool')
+        self.assertEqual(str(c), '0 bool')
 
-    def test_bad_ct(self):
+    def test_negate(self):
         c = self.c()
-        self.assertRaises(ContentType.DoesNotExist, c._get_mod, ('fake', 'model'), {})
+        self.assertIs(c.negated, False)
+        c.negate()
+        self.assertIs(c.negated, True)
+        c.negate()
+        self.assertIs(c.negated, False)
 
-    def test_no_filters(self):
-        o = self.make()
+    def _eval(self, true, false, **kwargs):
+        ct = self.c(**kwargs)
+        cf = self.c(negated=True, **kwargs)
+        for x in true:
+            print 'true', x
+            self.assertTrue(ct.evaluate(*x))
+            self.assertFalse(cf.evaluate(*x))
+        for x in false:
+            print 'false', x
+            self.assertFalse(ct.evaluate(*x))
+            self.assertTrue(cf.evaluate(*x))
+
+    def test_eval_eq(self):
+        self._eval(true=((2, 2), (4.5, 4.5)), false=((2, 3), (4, 3), (4.5, 4.4)))
+
+    def test_eval_regex(self):
+        true = (('abc',), ('abcx',), ('def',), ('defq',))
+        false = (('xabc',), ('random',), ('qdef',))
+        self._eval(true, false, right=Function('regex', ('abc|def',)), operator='re')
+
+    def test_eval_lt(self):
+        d1 = datetime.date(2014, 1, 1)
+        d2 = datetime.date(2014, 1, 1)
+        d3 = datetime.date(2014, 2, 1)
+        true = ((2, 3), (-2.4, -2.1), (d1, d3))
+        false = ((3, 2), (3, 3), (-2.1, -2.4), (d3, d1), (d1, d2))
+        self._eval(true, false, operator='<')
+
+    def test_eval_lte(self):
+        d1 = datetime.date(2014, 1, 1)
+        d2 = datetime.date(2014, 1, 1)
+        d3 = datetime.date(2014, 2, 1)
+        true = ((2, 3), (-2.4, -2.1), (d1, d3), (3, 3), (d1, d2))
+        false = ((3, 2), (-2.1, -2.4), (d3, d1))
+        self._eval(true, false, operator='<=')
+
+    def test_eval_in(self):
+        right = Selector(('const', {2, 4.5, datetime.date(2014, 1, 1), 'hello'}), None)
+        true = ((2,), (4.5,), (datetime.date(2014, 1, 1),), ('hello',))
+        false = (('2',), ('goodbye',), (datetime.datetime(2014, 1, 1),))
+        self._eval(true, false, right=right, operator='in')
+
+    def test_eval_bool(self):
+        self.defaults = {'right': None, 'operator': 'bool'}
+        true = ((True,), ([1],), (1,), (datetime.date.today(),))
+        false = ((None,), (False,), ([],))
+        self._eval(true, false)
+        f = DeferredDict({'app_label': Selector(0, None)})
+        chain = ('objects', ('filter', f))
+        l = Selector(('model', 'contenttypes.contenttype'), chain)
+        self._eval((('contenttypes',),), (('random',),), left=l)
+
+    def test_eval_error(self):
+        self.defaults = {'left': Selector(0, ('hello',))}
         c = self.c()
-        qs = c._get_mod(('rules', 'object'), None)
-        self.assertEqual(len(qs), 1)
-        self.assertEqual(qs[0].pk, o.pk)
-
-    def test_bad_filters(self):
-        c = self.c(value={'nofield': False})
-        # extra has to be a dict
-        self.assertRaises(TypeError, c._get_mod, ('rules', 'object'), None)
-        self.assertRaises(FieldError, c._get_mod, ('rules', 'object'), {})
-
-    def test_filters_applied(self):
-        o = self.make()
-        c = self.c(value={'str1__isnull': False})
-        self.assertEqual(len(c._get_mod(('rules', 'object'), {})), 1)
-        c.value['str1__isnull'] = True
-        self.assertEqual(len(c._get_mod(('rules', 'object'), {})), 0)
-
-    def test_extra_override(self):
-        o = self.make()
-        c = self.c(value={'str1__isnull': False})
-        self.assertEqual(len(c._get_mod(('rules', 'object'), {})), 1)
-        self.assertEqual(len(c._get_mod(('rules', 'object'), {'str1__isnull': True})), 0)
+        self.assertIs(c.evaluate(2, 2), False)
+        c.negate()
+        self.assertIs(c.evaluate(2, 2), False)
+        c = self.c(right=None, operator='bool')
+        self.assertIs(c.evaluate(3), False)
+        c.negate()
+        self.assertIs(c.evaluate(3), True)
+        c.negate()
+        c.hello = 'goodbye'
+        self.assertIs(c.evaluate(c), True)
 
 
 class Dummy(object):
@@ -155,14 +186,14 @@ class Dummy(object):
     def negate(self):
         self.v = not self.v
 
-    def _evaluate(self, objects, extra):
+    def _evaluate(self, info):
         return self.v
 
     def __str__(self):
         return str(id(self))
 
 
-class TestConditionNode(Base):
+class TestConditionNode(TestCase):
     def test_init(self):
         n = ConditionNode()
         self.assertEqual(n.children, [])
