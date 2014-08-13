@@ -21,7 +21,7 @@ class ContinuationStore(defaultdict):
         elif key == 'noop' or not key:
             self[key] = noop
             return noop
-        raise NoContinuationError
+        raise NoContinuationError(key)
 
     def register(self, *args, **kwargs):
         if not args:
@@ -34,6 +34,22 @@ class ContinuationStore(defaultdict):
             raise ValueError('A continuation named "{}" already exists.'.format(name))
         self[name] = func
         return func
+
+    def bind(self, context):
+        bound = self.copy()
+        for k in self:
+            try:
+                bound[k] = self[k].bind(context)
+            except AttributeError:
+                pass
+        return bound
+
+    def unbind(self):
+        for k in self:
+            try:
+                self[k].unbind()
+            except AttributeError:
+                pass
 
 store = ContinuationStore.default = ContinuationStore()
 

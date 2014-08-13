@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 
 from madlibs.models.fields import JSONTextField
+from .cache import RuleCache, TopicalRuleCache
 from .conf import settings
 from .core import Rule as CoreRule
 
@@ -88,8 +89,28 @@ class BaseRule(CoreRule, models.Model):
         abstract = True
 
 
+def expand_model_key(key):
+    '''key types
+    * create.<app_label>.<model>:<signal>
+    * update.<ditto>
+    * delete.<ditto>
+    '''
+    sig = ''
+    if ':' in key:
+        key, sig = key.split(':')
+        sig = ':' + sig
+    parts = key.split('.')
+    if parts[0] in ('create', 'update', 'delete') and len(parts) == 3:
+        keys = ['#', '#.{1}.{2}', '#.{1}.#', '{0}.#', '{0}.{1}.#', '{0}.{1}.{2}']
+        return tuple(k.format(*parts) + sig for k in keys)
+    return NotImplemented
+
+
 if settings.RULES_CONCRETE_MODELS:
     class Rule(BaseRule):
         def get_absolute_url(self):
             """For now we'll just use the admin, but eventually we'll want a view customers can use."""
             return reverse('admin:rule_reactor_rule_change', args=[self.pk])
+
+    RuleCache.default = RuleCache(Rule.objects)
+    TopicalRuleCache.default = TopicalRuleCache(RuleCache.default, [expand_model_key])

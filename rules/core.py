@@ -1,10 +1,12 @@
 import copy
+import logging
 import operator
 
 from django.utils import tree
 
-from .continuations import ContinuationStore
 from .deferred import DeferredValue, ChainError
+
+logger = logging.getLogger(__name__)
 
 __all__ = ['AND', 'OR', 'ConditionNode', 'Condition']
 
@@ -193,21 +195,23 @@ class Condition(object):
                     raise NotImplementedError(msg.format(type(left), type(right), self.op))
             return not result if self.negated else bool(result)
         except:
+            logger.debug('Exception while evaluating condition "{}"'.format(self),
+                         exc_info=True)
             return False
 
 
 class Rule(object):
     Condition = Condition
-    continuations = ContinuationStore.default
 
     def __init__(self, **kwargs):
-        self.value = kwargs.pop('value', None)
-        self.conditions = self._build_tree(kwargs.pop('conditions', None))
-        self.continuation = kwargs.pop('continuation', None)
+        self.trigger = kwargs['trigger']
+        self.value = kwargs.get('value')
+        self.conditions = self._build_tree(kwargs.get('conditions'))
+        self.continuation = kwargs.get('continuation')
         if 'Condition' in kwargs:
-            self.Condition = kwargs.pop('Condition')
-        if 'continuations' in kwargs:
-            self.continuations = kwargs.pop('continuations')
+            self.Condition = kwargs['Condition']
+        if 'weight' in kwargs:
+            self.weight = kwargs['weight']
 
     def _build_tree(self, conditions):
         Node = self.Condition.Node
@@ -224,10 +228,20 @@ class Rule(object):
         """Matches the given arguments against this rule."""
         return self._match({'objects': objects, 'extra': extra})
 
+    def continue_(self, info, continuations):
+        # Doesn't catch exceptions on purpose, so continuations can be
+        # used to affect control flow (though that shouldn't be too common).
+        cont = continuations[self.continuation]
+        value = self.value
+        if isinstance(value, DeferredValue):
+            value = value.get_value(info)
+        cont(self, info, value)
+
     def _match(self, info):
-        if self.conditions._evaluate(info):
-            store = info.get('continuations') or self.continuations
-            cont = store[self.continuation]
-            cont(self, info, self.value)
-            return True
+        try:
+            if self.conditions._evaluate(info):
+                return self
+        except Exception:
+            logger.debug('Exception while evaluating rule conditions for {}'.format(self),
+                         exc_info=True)
         return False

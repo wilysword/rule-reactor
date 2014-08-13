@@ -6,6 +6,8 @@ SECRET_KEY = 'Not really a secret key, here for docs and testing.'
 
 INSTALLED_APPS = ('django.contrib.auth', 'django.contrib.contenttypes', 'rules')
 
+RULES_OWNER_MODEL = 'auth.user'
+
 SPHINX = {'exclude_patterns': ('setup.py',)}
 
 DATABASES = {
