@@ -61,6 +61,7 @@ class BaseRule(CoreRule, models.Model):
     value = JSONTextField(blank=True, help_text='A helper value which will be '
                           'passed to the continuation when the rule is matched.')
     tree = models.TextField(help_text='The string representation of the condition tree.')
+    weight = models.IntegerField(default=0, blank=True)
 
     objects = RuleManager()
 
@@ -98,9 +99,18 @@ def expand_model_key(key):
     sig = ''
     if ':' in key:
         key, sig = key.split(':')
-        sig = ':' + sig
     parts = key.split('.')
     if parts[0] in ('create', 'update', 'delete') and len(parts) == 3:
+        if sig in ('pre_save', 'pre_delete'):
+            sig = ':' + sig
+        elif sig not in ('post_delete', 'post_save', ''):
+            raise ValueError('Unsupported signal: "{}"'.format(sig))
+        is_delete = parts[0] == 'delete'
+        if (is_delete and 'save' in sig) or (not is_delete and 'delete' in sig):
+            msg = 'Signal does not match event: "{}" vs. "{}"'
+            raise ValueError(msg.format(parts[0], sig))
+        elif 'post' in sig:
+            sig = ''
         keys = ['#', '#.{1}.{2}', '#.{1}.#', '{0}.#', '{0}.{1}.#', '{0}.{1}.{2}']
         return tuple(k.format(*parts) + sig for k in keys)
     return NotImplemented

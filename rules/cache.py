@@ -1,5 +1,7 @@
 from collections import defaultdict
 
+__all__ = ['RuleList', 'RuleMutex', 'expand_key', 'RuleCache', 'TopicalRuleCache']
+
 
 def _sortkey(rule):
     return getattr(rule, 'weight', 0)
@@ -8,8 +10,8 @@ def _sortkey(rule):
 class RuleList(tuple):
     __slots__ = ()
 
-    def __init__(self, iterable):
-        tuple.__init__(self, sorted(iterable, key=_sortkey))
+    def __new__(cls, iterable):
+        return tuple.__new__(cls, sorted(iterable, key=_sortkey))
 
     def matches(self, *objects, **extra):
         return self._matches({'objects': objects, 'extra': extra})
@@ -26,8 +28,8 @@ class RuleList(tuple):
 class RuleMutex(tuple):
     __slots__ = ()
 
-    def __init__(self, iterable):
-        tuple.__init__(self, sorted(iterable, key=_sortkey))
+    def __new__(cls, iterable):
+        return tuple.__new__(cls, sorted(iterable, key=_sortkey))
 
     @property
     def weight(self):
@@ -78,7 +80,7 @@ class RuleCache(defaultdict):
         self.sources[key].append(source)
 
     def get_default_source(self, key):
-        return lambda cache: cache.source.filter(trigger=key)
+        return lambda c: self.source.filter(trigger=key)
 
     def set_primary_source(self, key, source):
         self.sources[key][0] = source
@@ -120,10 +122,10 @@ class TopicalRuleCache(RuleCache):
 
     def get_default_source(self, key):
         def source(cache):
-            keys = cache._expandkey(key)
+            keys = self._expandkey(key)
             result = []
             for k in keys:
-                result.extend(cache.source[k])
+                result.extend(self.source[k])
             return result
 
         return source
