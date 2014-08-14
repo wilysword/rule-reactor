@@ -39,17 +39,21 @@ class ContinuationStore(defaultdict):
         bound = self.copy()
         for k in self:
             try:
-                bound[k] = self[k].bind(context)
+                bind = self[k].bind
             except AttributeError:
                 pass
+            else:
+                bound[k] = bind(context)
         return bound
 
     def unbind(self):
         for k in self:
             try:
-                self[k].unbind()
+                unbind = self[k].unbind
             except AttributeError:
                 pass
+            else:
+                unbind()
 
 store = ContinuationStore.default = ContinuationStore()
 
