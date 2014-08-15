@@ -10,8 +10,10 @@ def _sortkey(rule):
 class RuleList(tuple):
     __slots__ = ()
 
-    def __new__(cls, iterable):
-        return tuple.__new__(cls, sorted(iterable, key=_sortkey))
+    def __new__(cls, iterable=None):
+        if iterable:
+            return tuple.__new__(cls, sorted(iterable, key=_sortkey))
+        return tuple.__new__(cls)
 
     def matches(self, *objects, **extra):
         return self._matches({'objects': objects, 'extra': extra})
@@ -27,9 +29,7 @@ class RuleList(tuple):
 
 class RuleMutex(tuple):
     __slots__ = ()
-
-    def __new__(cls, iterable):
-        return tuple.__new__(cls, sorted(iterable, key=_sortkey))
+    __new__ = RuleList.__new__
 
     @property
     def weight(self):
@@ -106,10 +106,20 @@ class RuleCache(defaultdict):
         return defaultdict.__setitem__(self, key, rules)
 
 
+class SourcelessCache(RuleCache):
+    def __init__(self):
+        super(SourcelessCache, self).__init__(lambda c: ())
+
+    def get_default_source(self, key):
+        return self.source
+
+
 class TopicalRuleCache(RuleCache):
     __slots__ = ('expanders',)
 
-    def __init__(self, source, expanders=None):
+    def __init__(self, source=None, expanders=None):
+        if source is None:
+            source = defaultdict(RuleList)
         self.expanders = expanders or []
         RuleCache.__init__(self, source)
 

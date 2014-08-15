@@ -4,6 +4,7 @@ from django.test import TestCase
 from rules.cache import *
 from rules.conf import settings
 from rules.core import ConditionNode
+from . import Dummy
 
 if settings.RULES_CONCRETE_MODELS:
     from rules.models import Rule, expand_model_key
@@ -160,17 +161,6 @@ class TestRuleMutex(TestCollectionBase):
         self.assertFalse(r.match())
 
 
-class Dummy(object):
-    def __init__(self, ismatch, weight=0):
-        self.ismatch = ismatch
-        self.weight = weight
-
-    def _match(self, info):
-        if self.ismatch:
-            return self
-        return False
-
-
 class TestRuleCache(TestCase):
     def setUp(self):
         for i in range(3):
@@ -270,9 +260,6 @@ class TestRuleCache(TestCase):
         self.assertIsNot(r['me'], d)
         self.assertTrue(isinstance(r['me'], RuleList))
         self.assertEqual(tuple(r['me']), tuple(d))
-        # Tries to make a RuleList out of it, but None is not iterable.
-        with self.assertRaises(TypeError):
-            r['you'] = None
 
     def test_missing_default_source(self):
         r = RuleCache(Rule.objects)
@@ -295,9 +282,9 @@ class TestRuleCache(TestCase):
 
     def test_missing_added_source(self):
         r = RuleCache(Rule.objects.all())
-        d0 = Dummy(True, -1)
+        d0 = Dummy(True, weight=-1)
         d1 = Rule.objects.get(trigger='goodbye')
-        d2 = Dummy(True, 1)
+        d2 = Dummy(True, weight=1)
         # Test object with _match
         r.add_source('goodbye', d2)
         # Test callable and list

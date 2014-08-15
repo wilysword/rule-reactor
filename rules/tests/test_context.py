@@ -1,36 +1,124 @@
-import copy
-
-from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
-from django.utils.timezone import now
-from model_mommy import mommy, recipe
 
-from falcon.core.models import Customer, User, Product
-from populations.models import Population, Individual
-from rule_reactor.models import Rule, Occurrence
-from rule_reactor.context import RuleChecker
+from rules.cache import RuleCache, TopicalRuleCache, SourcelessCache
+from rules.context import RuleChecker, SignalChecker
+from rules.continuations import ContinuationStore, store
+from rules.conf import settings
+from . import Dummy
 
-Customer = recipe.Recipe(Customer, inactive_date=now)
-User = recipe.Recipe(User, customer=recipe.foreign_key(Customer), password_updated_on=now,
-                     temp_password_expires_on=now, date_modified=now, inactive_date=now,
-                     last_login_date=now, user_type_id=7)  # 7 == customer user
-Product = recipe.Recipe(Product)
+if settings.RULES_CONCRETE_MODELS:
+    from rules.models import Rule, expand_model_key
+else:
+    from rules.models import BaseRule, expand_model_key
+
+    class Rule(BaseRule):
+        class Meta:
+            app_label = 'rules'
+
+    RuleCache.default = RuleCache(Rule.objects)
+    TopicalRuleCache.default = TopicalRuleCache(RuleCache.default, [expand_model_key])
+
+    del BaseRule
+
+store = store.copy()
+store.clear()
+
+
+class DifferentRuleCache(RuleCache):
+    # Just to test the cls argument
+    default = NotImplemented
+
+    def __init__(self, source=None):
+        super(DifferentRuleCache, self).__init__(source)
 
 
 class TestRuleChecker(TestCase):
     def setUp(self):
-        pop = mommy.make(Population, customer=Customer.make())
-        self.user = User.make(customer=pop.customer)
-        self.cti = ContentType.objects.get_for_model(Individual)
-        ctp = ContentType.objects.get_for_model(Population)
-        rule = recipe.Recipe(Rule, table=self.cti, type='error')
-        self.rule1 = rule.make(when='add', conditions={'new_values': {'first_name': ['']}})
-        self.rule2 = rule.make(when='edit', conditions={'fields': ['ssn'], 'new_values': {'ssn': [None, '']}})
-        self.rule3 = rule.make(when='edit', customer=self.user.customer, type='warn')
-        self.rule4 = rule.make(when='exists', table=ctp)
-        self.rule5 = rule.make(product=Product.make())
-        self.i = recipe.Recipe(Individual, population=pop)
-        self.occ = recipe.Recipe(Occurrence, user=self.user)
+        self.rule1 = Rule.objects.create(trigger='create.rules.#', weight=1)
+        self.rule2 = Rule.objects.create(trigger='#.rules.#')
+
+    def test_init_minimum(self):
+        rc = RuleChecker()
+        self.assertFalse(hasattr(rc, 'continuations'))
+        self.assertIs(rc.cache, TopicalRuleCache.default)
+        self.assertIs(rc._cont, ContinuationStore.default)
+        self.assertEqual(rc.context, {})
+
+    def test_init_cont(self):
+        rc = RuleChecker(continuations=NotImplemented, hello=3, goodbye=4)
+        self.assertIs(rc._cont, NotImplemented)
+        self.assertEqual(rc.context, {'hello': 3, 'goodbye': 4})
+        rc = RuleChecker(life=42, universe=42, everything=42)
+        self.assertEqual(rc.context, {'life': 42, 'universe': 42, 'everything': 42})
+
+    def test_init_default(self):
+        d1, d2 = TopicalRuleCache.default, RuleCache.default
+        del TopicalRuleCache.default
+        del RuleCache.default
+        self.assertRaises(ValueError, RuleChecker)
+        rc = RuleChecker(cls=DifferentRuleCache)
+        self.assertIs(rc.cache, NotImplemented)
+        TopicalRuleCache.default, RuleCache.default = d1, d2
+        # Test precendence; all these keywords have precedence over default (duh)
+        d = Dummy(True, trigger='')
+        for k in ('cache', 'rules', 'queryset', 'source'):
+            rc = RuleChecker(cls=DifferentRuleCache, **{k: RuleCache.default})
+            self.assertIsNot(rc.cache, NotImplemented)
+
+    def test_init_cache(self):
+        rc = RuleChecker(cache=3)
+        self.assertEqual(rc.cache, 3)
+        c = RuleCache(None)
+        rc = RuleChecker(cache=c)
+        self.assertIs(rc.cache, c)
+
+    def test_init_rules(self):
+        d1 = Dummy(False, trigger='me', weight=1)
+        d2 = Dummy(True, trigger='you')
+        d3 = Dummy(True, trigger='me')
+        rc = RuleChecker(rules=[d1, d2, d3])
+        self.assertTrue(isinstance(rc.cache, TopicalRuleCache))
+        self.assertFalse(isinstance(rc.cache.source, RuleCache))
+        self.assertEqual(tuple(rc.cache['me']), (d3, d1))
+        self.assertEqual(tuple(rc.cache['you']), (d2,))
+        rc = RuleChecker(rules=[d1, d2, d3], cls=SourcelessCache)
+        self.assertTrue(isinstance(rc.cache, SourcelessCache))
+        self.assertEqual(tuple(rc.cache['me']), (d3, d1))
+        self.assertEqual(tuple(rc.cache['you']), (d2,))
+        # Test precedence; cache is the only keyword with higher precedence than rules
+        c = rc.cache
+        rc = RuleChecker(cache=c, rules=[d1, d2, d3])
+        self.assertIs(rc.cache, c)
+
+    def test_init_queryset(self):
+        rc = RuleChecker(queryset=NotImplemented)
+        self.assertIs(rc.cache.source.source, NotImplemented)
+        self.assertTrue(isinstance(rc.cache, TopicalRuleCache))
+        self.assertTrue(isinstance(rc.cache.source, RuleCache))
+        rc = RuleChecker(cls=DifferentRuleCache, queryset=3)
+        self.assertEqual(rc.cache.source.source, 3)
+        self.assertFalse(isinstance(rc.cache, TopicalRuleCache))
+        self.assertTrue(isinstance(rc.cache.source, RuleCache))
+        # Test precendence; these keywords have precedence over queryset
+        for k in ('cache', 'rules'):
+            rc = RuleChecker(queryset=NotImplemented, **{k: RuleCache.default})
+            self.assertFalse(isinstance(rc.cache.source, RuleCache))
+
+    def test_init_source(self):
+        rc = RuleChecker(source=NotImplemented)
+        self.assertIs(rc.cache.source, NotImplemented)
+        self.assertTrue(isinstance(rc.cache, TopicalRuleCache))
+        rc = RuleChecker(cls=DifferentRuleCache, source=2)
+        self.assertEqual(rc.cache.source, 2)
+        self.assertFalse(isinstance(rc.cache, TopicalRuleCache))
+        # Test precendence; these keywords have precedence over queryset
+        for k in ('cache', 'rules', 'queryset'):
+            rc = RuleChecker(source=NotImplemented, **{k: RuleCache.default})
+            self.assertIsNot(rc.cache.source, NotImplemented)
+
+
+class TestSignalChecker(TestCase):
+    __test__ = False
 
     def test_init(self):
         self.assertRaises(ValueError, RuleChecker, None)

@@ -201,25 +201,20 @@ class Condition(object):
 
 
 class Rule(object):
-    Condition = Condition
-
-    def __init__(self, **kwargs):
-        self.trigger = kwargs['trigger']
+    def __init__(self, trigger, **kwargs):
+        self.trigger = trigger
         self.value = kwargs.get('value')
         self.conditions = self._build_tree(kwargs.get('conditions'))
         self.continuation = kwargs.get('continuation')
-        if 'Condition' in kwargs:
-            self.Condition = kwargs['Condition']
         if 'weight' in kwargs:
             self.weight = kwargs['weight']
 
     def _build_tree(self, conditions):
-        Node = self.Condition.Node
-        if isinstance(conditions, Node):
+        if hasattr(conditions, '_evaluate'):
             return conditions
         elif not conditions:
             # Make it so the rule is never matched.
-            return Node(connector=OR)
+            return ConditionNode(connector=OR)
         else:
             # TODO parse
             return root

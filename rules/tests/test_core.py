@@ -3,8 +3,13 @@ import datetime
 from django.test import TestCase
 from madlibs.test_utils import CollectMixin
 
-from rules.core import AND, OR, ConditionNode, Condition
+from rules.core import AND, OR, ConditionNode, Condition, Rule
 from rules.deferred import Function, Selector, DeferredDict
+from rules.continuations import store
+from . import Dummy
+
+store = store.copy()
+store.clear()
 
 
 class TestCondition(TestCase):
@@ -169,20 +174,6 @@ class TestConditionMethods(CollectMixin, TestCase):
         c.negate()
         c.hello = 'goodbye'
         self.assertIs(c.evaluate(c), True)
-
-
-class Dummy(object):
-    def __init__(self, value):
-        self.v = value
-
-    def negate(self):
-        self.v = not self.v
-
-    def _evaluate(self, info):
-        return self.v
-
-    def __str__(self):
-        return str(id(self))
 
 
 class TestConditionNode(TestCase):
@@ -396,3 +387,93 @@ class TestConditionNode(TestCase):
         vals = [c.v for c in n1.children]
         self.assertEqual(vals, [c1.v, c2.v, c1.v])
         # Uses __ior__, so this test is sufficient, along with test_ior.
+
+
+@store.register
+def cont1(rule, info, value):
+    rule.cont1 = value
+    info['value'] = value
+
+
+@store.register
+def cont2(*args):
+    raise ValueError
+
+
+class TestRule(TestCase):
+    def test_init_minimum(self):
+        self.assertRaises(TypeError, Rule)
+        r = Rule(trigger='hello')
+        self.assertEqual(r.trigger, 'hello')
+        self.assertIs(r.value, None)
+        self.assertEqual(r.conditions.connector, OR)
+        self.assertEqual(r.conditions.children, [])
+        self.assertIs(r.continuation, None)
+        self.assertFalse(hasattr(r, 'weight'))
+
+    def test_init(self):
+        c1, c2 = Dummy(True), Dummy(False)
+        n = ConditionNode([c1, c2])
+        r = Rule(trigger='hey', value=4.5, conditions=n, continuation='noop',
+                 weight=-5, extraneous='argh')
+        self.assertEqual(r.trigger, 'hey')
+        self.assertEqual(r.value, 4.5)
+        self.assertIs(r.conditions, n)
+        self.assertEqual(r.continuation, 'noop')
+        self.assertEqual(r.weight, -5)
+        self.assertFalse(hasattr(r, 'extraneous'))
+
+    def test_match(self):
+        r1 = Rule(trigger='hi')
+        self.assertFalse(r1.match())
+        def x(q): raise Exception
+        r1.conditions = x
+        self.assertFalse(r1.match())
+        x._evaluate = x
+        self.assertIs(r1.conditions._evaluate, x)
+        self.assertFalse(r1.match())
+
+        c1, c2 = Dummy(True), Dummy(True)
+        n = ConditionNode([c1, c2])
+        r2 = Rule(trigger='hi', conditions=n)
+        self.assertIs(r2.match(), r2)
+
+    def test_continue_simple(self):
+        r1 = Rule('hi', continuation='cont1', value=14)
+        i = {}
+        r1.continue_(i, store)
+        self.assertEqual(i['value'], r1.cont1)
+
+        r2 = Rule('hi', continuation='none')
+        self.assertRaises(KeyError, r2.continue_, i, store)
+        self.assertRaises(TypeError, r2.continue_, i, None)
+
+    def test_continue_raises(self):
+        r = Rule('hi', continuation='cont2')
+        self.assertRaises(ValueError, r.continue_, {}, store)
+
+    def test_continue_deferred(self):
+        s = Selector(0, ('strip', 2))
+        i = {'objects': [' help']}
+        r = Rule('hi', continuation='cont1', value=s)
+        r.continue_(i, store)
+        self.assertEqual(len(i), 3)
+        self.assertEqual(i['value'], 'l')
+        self.assertEqual(i[id(s)], 'l')
+        self.assertEqual(r.cont1, 'l')
+        self.assertIs(r.value, s)
+
+    def test_build_tree(self):
+        r = Rule('hey')
+        c = ConditionNode([Dummy(True)])
+        self.assertIs(r._build_tree(c), c)
+        x = lambda: None
+        x._evaluate = x
+        self.assertIs(r._build_tree(x), x)
+        # Tested None indirectly in the constructor
+        y = r._build_tree('')
+        self.assertEqual(y.connector, OR)
+        self.assertEqual(y.children, [])
+        self.assertTrue(isinstance(y, ConditionNode))
+
+    # TODO once parsing is implemented, need to test _build_tree properly
