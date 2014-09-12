@@ -24,6 +24,12 @@ class ConditionNode(tree.Node):
         test = all if self.connector == AND else any
         return test(child._evaluate(info) for child in self.children)
 
+    def add(self, node, conn_type, *args, **kwargs):
+        # Future Django versions did away with this bit, not sure why.
+        if len(self.children) < 2:
+            self.connector = conn_type
+        return tree.Node.add(self, node, conn_type, *args, **kwargs)
+
     def negate(self):
         # !(x & y & z) = (!x | !y | !z)
         connector = AND if self.connector == OR else OR
@@ -33,22 +39,24 @@ class ConditionNode(tree.Node):
         self.connector = self.default
 
     def collapse(self):
-        """Removes unnecessary nodes, returning the minimum number of nodes for this tree."""
-        c = self.children
-        if len(c) > 0:
+        """
+        Removes unnecessary nodes, returning the minimum version of this tree.
+        """
+        children = self.children
+        if len(children) > 0:
             i = 0
-            while i < len(c):
-                if isinstance(c[i], ConditionNode):
-                    child = c[i]
-                    child.collapse()
-                    if len(child.children) < 2 or child.connector == self.connector:
-                        c.pop(i)
-                        c.extend(child.children)
+            while i < len(children):
+                if isinstance(children[i], ConditionNode):
+                    c = children[i]
+                    c.collapse()
+                    if len(c.children) < 2 or c.connector == self.connector:
+                        children.pop(i)
+                        children.extend(c.children)
                         continue
                 i += 1
-        if len(c) == 1 and isinstance(c[0], ConditionNode):
-            self.children = c[0].children
-            self.connector = c[0].connector
+        if len(children) == 1 and isinstance(children[0], ConditionNode):
+            self.children = children[0].children
+            self.connector = children[0].connector
 
     def __invert__(self):
         negated = copy.deepcopy(self)
@@ -63,7 +71,7 @@ class ConditionNode(tree.Node):
         ored = copy.deepcopy(self)
         return ored.__ior__(other)
 
-    # Order doesn't matter in boolean logic (assuming you aren't relying on short-circuiting).
+    # Order doesn't matter in boolean logic (unless you're short-circuiting).
     __rand__ = __and__
     __ror__ = __or__
 
@@ -77,12 +85,12 @@ class ConditionNode(tree.Node):
 
 
 class _unary_descriptor(object):
-    __slots__ = ()
     def __get__(self, instance, owner):
         UOPS = owner.UNARY_OPERATORS
         if instance is not None:
-            return instance.op in UOPS
-        return lambda op: op in UOPS
+            return instance.operator in UOPS
+        return lambda operator: operator in UOPS
+    __slots__ = ()
 
 
 def _exists(left, right):
@@ -98,7 +106,9 @@ def _like(left, right):
 
 
 class Condition(object):
-    NEGATED_OPERATORS = {'not like': 'like', 'does not exist': 'exists', 'not in': 'in'}
+    NEGATED_OPERATORS = {'not like': 'like',
+                         'does not exist': 'exists',
+                         'not in': 'in'}
     UNARY_OPERATORS = {'bool', 'exists', 'does not exist'}
     OPERATOR_MAP = {
         '==': operator.eq,
@@ -114,51 +124,30 @@ class Condition(object):
         'in': lambda l, r: l in r,
     }
 
-    KWARGS = ('left', 'right', 'operator', 'negated')
-
     Node = ConditionNode
 
     @classmethod
     def C(cls, *args):
         conditions = []
-        Node = cls.Node
         for a in args:
             if isinstance(a, dict):
                 conditions.append(cls(**a))
-            elif isinstance(a, cls) or isinstance(a, Node):
-                conditions.append(a)
             else:
-                raise ValueError('Invalid positional argument: {}'.format(repr(a)))
-        return Node(conditions)
+                conditions.append(a)
+        return cls.Node(conditions)
 
     is_unary = _unary_descriptor()
 
-    def __init__(self, **kwargs):
-        unknown = [k for k in kwargs if k not in self.KWARGS]
-        if unknown:
-            raise TypeError('{} are invalid keyword arguments for this function'.format(unknown))
-        self.negated = bool(kwargs.get('negated'))
-
-        operator = kwargs.get('operator')
+    def __init__(self, left, operator, right=None, negated=False):
+        self.negated = bool(negated)
         if operator in self.NEGATED_OPERATORS:
             self.negate()
             operator = self.NEGATED_OPERATORS[operator]
-        elif operator not in self.OPERATOR_MAP:
-            raise NotImplementedError('Unknown operator: "{}"'.format(operator))
-        self.op = operator
+        self.operator = operator
         self._eval = self.OPERATOR_MAP[operator]
 
-        left = kwargs.get('left')
-        right = kwargs.get('right')
-        if not isinstance(left, DeferredValue):
-            raise ValueError('Condition.left must be a deferred value type')
-        if not self.is_unary and not right:
-            msg = 'Condition.right is required unless using a unary operator.'
-            raise ValueError(msg)
-        elif right and not isinstance(right, DeferredValue):
-            raise ValueError('Condition.right must be a deferred value type')
-        self.left = left.maybe_const()
-        self.right = right and right.maybe_const()
+        self.left = left
+        self.right = right
 
     def __str__(self):
         fmt = '{} {}'
@@ -166,7 +155,7 @@ class Condition(object):
             fmt = 'NOT ' + fmt
         if not self.is_unary:
             fmt += ' {}'
-        return fmt.format(self.left, self.op, self.right)
+        return fmt.format(self.left, self.operator, self.right)
 
     def negate(self):
         self.negated = not self.negated
@@ -177,26 +166,21 @@ class Condition(object):
     def _evaluate(self, info):
         try:
             try:
-                left = self.left
-                if isinstance(left, DeferredValue):
-                    left = left.get_value(info)
-                right = self.right
-                if isinstance(self.right, DeferredValue):
-                    right = right.get_value(info)
+                left = self.left.get_value(info)
+                right = self.right and self.right.get_value(info)
             except ChainError:
-                # A chain error with bool operator is assumed to mean the value is None.
+                # A chain error with bool operator is as if the value is None.
                 if not self.is_unary:
                     raise
                 result = False
             else:
                 result = self._eval(left, right)
                 if result is NotImplemented:  # pragma: no cover
-                    msg = 'Comparing {} and {} with {} operator'
-                    raise NotImplementedError(msg.format(type(left), type(right), self.op))
+                    return False
             return not result if self.negated else bool(result)
         except:
-            logger.debug('Exception while evaluating condition "{}"'.format(self),
-                         exc_info=True)
+            logger.debug('Exception while evaluating condition "{}"'
+                         .format(self), exc_info=True)
             return False
 
 
@@ -222,6 +206,7 @@ class Rule(object):
     def match(self, *objects, **extra):
         """Matches the given arguments against this rule."""
         return self._match({'objects': objects, 'extra': extra})
+    __call__ = match
 
     def continue_(self, info, continuations):
         # Doesn't catch exceptions on purpose, so continuations can be
@@ -237,6 +222,27 @@ class Rule(object):
             if self.conditions._evaluate(info):
                 return self
         except Exception:
-            logger.debug('Exception while evaluating rule conditions for {}'.format(self),
-                         exc_info=True)
+            logger.debug('Exception while evaluating rule conditions for {}'
+                         .format(self), exc_info=True)
         return False
+
+
+def rule(trigger, **kwargs):
+    def decorator(func):
+        class conditions:
+            @staticmethod
+            def _evaluate(info):
+                return func(*info['objects'], **info['extra'])
+        kwargs['conditions'] = conditions
+        r = Rule(trigger, **kwargs)
+        if 'cache' in kwargs:
+            kwargs['cache'].add_source(trigger, r)
+        else:
+            from .cache import RuleCache
+            try:
+                RuleCache.default.add_source(trigger, r)
+            except AttributeError:
+                from warnings import warn
+                warn('Rule created but not added to any cache.')
+        return r
+    return decorator

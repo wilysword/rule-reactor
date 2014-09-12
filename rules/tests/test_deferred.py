@@ -7,9 +7,6 @@ class TestDeferred(TestCase):
     def test_init(self):
         self.assertRaises(TypeError, DeferredValue)
 
-    def test_slots(self):
-        self.assertEqual(DeferredValue.__slots__, ())
-
     def test_issubclass(self):
         self.assertTrue(issubclass(DeferredDict, DeferredValue))
         self.assertTrue(issubclass(DeferredList, DeferredValue))
@@ -32,21 +29,16 @@ class TestSelector(TestCase):
         self.assertRaises(NotImplementedError, Selector, '1', ())
         self.assertRaises(NotImplementedError, Selector, 1., ())
 
-    def test_slots(self):
-        self.assertEqual(Selector.__slots__, ('stype', 'chain', 'first'))
-        s = Selector('const', ())
-        with self.assertRaises(AttributeError):
-            s.random = 'me'
-
     def test_init_model(self):
         ct = ContentType.objects.all()[0]
         model = ct.app_label + '.' + ct.model
         s = Selector(('model', model), ())
-        self.assertEqual(s.stype, ('model', model))
+        self.assertEqual(s.stype, 'model')
+        self.assertEqual(s.arg, model)
         self.assertIs(s.first(None), ct.model_class())
-        self.assertRaises(ValueError, Selector, ('model', 'random.model.malformatted'), ())
-        self.assertRaises(ValueError, Selector, ('model', 'random.model'), ())
-        self.assertRaises(ValueError, Selector, 'model', ())
+        self.assertRaises(TypeError, Selector, ('model', 'random.model.malformatted'), ())
+        self.assertRaises(ContentType.DoesNotExist, Selector, ('model', 'random.model'), ())
+        self.assertRaises(AttributeError, Selector, 'model', ())
 
     def test_maybe_const_model(self):
         ct = ContentType.objects.all()[0]
@@ -58,12 +50,14 @@ class TestSelector(TestCase):
 
     def test_init_const(self):
         s = Selector('const', ())
-        self.assertEqual(s.stype, ('const', None))
+        self.assertEqual(s.stype, 'const')
+        self.assertIs(s.arg, None)
         self.assertIs(s.first(None), None)
         s = Selector(('const', 1), ())
-        self.assertEqual(s.stype, ('const', 1))
+        self.assertEqual(s.stype, 'const')
+        self.assertEqual(s.arg, 1)
         self.assertEqual(s.first(None), 1)
-        self.assertRaises(ValueError, Selector, 'const', (1,))
+        self.assertRaises(AssertionError, Selector, 'const', (1,))
 
     def test_maybe_const_const(self):
         s = Selector('const', ())
@@ -103,7 +97,7 @@ class TestSelector(TestCase):
     def test_maybe_const_deferred(self):
         s0 = Selector(0, ())
         s = Selector(s0, ())
-        self.assertIs(s.maybe_const(), s0)
+        self.assertIs(s.maybe_const(), s)
         s = Selector(s0, ('x',))
         self.assertIs(s.maybe_const(), s)
         s1 = Selector(('const', 5), ())
@@ -115,10 +109,9 @@ class TestSelector(TestCase):
     def test_init_chain(self):
         s1 = Selector('const', None)
         s2 = Selector(0, ('x',))
-        s = Selector(0, DeferredList([s1]))
-        self.assertEqual(s.chain, [None])
-        s = Selector(0, DeferredList([s2]))
-        self.assertEqual(s.chain, DeferredList([s2]))
+        s = Selector(0, [s1, s2])
+        self.assertEqual(s.chain, [s1, s2])
+        self.assertTrue(isinstance(s.chain, DeferredList))
 
     def test_eq(self):
         s1 = Selector(1, ['x'])
@@ -131,21 +124,15 @@ class TestSelector(TestCase):
         self.assertNotEqual(s1, s4)
         f = Function('sum', ())
         self.assertNotEqual(s1, f)
-        self.assertEqual(hash(s1), hash(s1))
-        self.assertEqual(hash(s1), hash(s2))
-        self.assertNotEqual(hash(s1), hash(s3))
-        self.assertNotEqual(hash(s1), hash(s4))
 
     def test_get_value(self):
         s = Selector(('const', 5), None)
         i = {}
         self.assertEqual(s.get_value(i), 5)
-        self.assertEqual(i[id(s)], 5)
         i[id(s)] = 4
-        self.assertEqual(s.get_value(i), 4)
+        self.assertEqual(s.get_value(i), 5)
         s = Selector(0, None)
-        # The chain must be iterable, so if it's None, we replace it with an empty tuple
-        self.assertEqual(s.chain, ())
+        self.assertEqual(s.chain, DeferredList())
 
     def test_get_value_from_dict(self):
         s = Selector('extra', ('one',))
@@ -228,27 +215,22 @@ class TestFunction(TestCase):
         self.assertIs(f.func, sum)
         self.assertEqual(f.name, 'sum')
         self.assertEqual(f.args, [(1, 2, 3)])
-        self.assertRaises(ValueError, Function, 'random', ())
+        self.assertRaises(KeyError, Function, 'random', ())
         f = Function('sum', DeferredList([(1, 2, 3)]))
         # because maybe_const is called
         self.assertEqual(f.args, [(1, 2, 3)])
-
-    def test_slots(self):
-        self.assertEqual(Function.__slots__, ('func', 'name', 'args'))
-        f = Function('sum', [(1, 2, 3)])
-        with self.assertRaises(AttributeError):
-            f.random = 'me'
+        self.assertEqual(str(f), 'sum((1, 2, 3))')
 
     def test_get_value(self):
         i = {}
         f = Function('sum', [(1, 2, 3)])
         x = f.get_value(i)
         self.assertEqual(x, 6)
-        self.assertIn(id(f), i)
-        self.assertEqual(i[id(f)], x)
         i[id(f)] = 8
-        self.assertEqual(f.get_value(i), 8)
-        self.assertEqual(f._get_value(i), 6)
+        self.assertEqual(f.get_value(i), 6)
+        f.args = DeferredList([(3, 4, 5)])
+        self.assertEqual(f.get_value(i), 6)
+        self.assertEqual(f._get_value(i), 12)
 
     def test_maybe_const(self):
         f = Function('sum', [(1, 2, 3)])
@@ -278,19 +260,9 @@ class TestFunction(TestCase):
         self.assertNotEqual(f1, f4)
         s = Selector(0, ())
         self.assertNotEqual(f1, s)
-        self.assertEqual(hash(f1), hash(f1))
-        self.assertEqual(hash(f1), hash(f2))
-        self.assertNotEqual(hash(f1), hash(f3))
-        self.assertNotEqual(hash(f1), hash(f4))
 
 
 class TestDeferredDict(TestCase):
-    def test_slots(self):
-        self.assertEqual(DeferredDict.__slots__, ())
-        d = DeferredDict()
-        with self.assertRaises(AttributeError):
-            d.random = 'me'
-
     def test_maybe_const(self):
         d = DeferredDict()
         self.assertIsNot(d.maybe_const(), d)
@@ -309,21 +281,8 @@ class TestDeferredDict(TestCase):
         self.assertEqual(d.get_value({'objects': [1]}), {'one': 1, 'two': 2})
         self.assertEqual(d.get_value({'objects': ['one']}), {'one': 'one', 'two': 2})
 
-    def test_keys_ignored(self):
-        s = Selector(0, None)
-        d = DeferredDict({s: 1})
-        self.assertIsNot(d.maybe_const(), d)
-        self.assertEqual(d.maybe_const(), {s: 1})
-        self.assertEqual(d.get_value({}), {s: 1})
-
 
 class TestDeferredList(TestCase):
-    def test_slots(self):
-        self.assertEqual(DeferredList.__slots__, ())
-        l = DeferredList()
-        with self.assertRaises(AttributeError):
-            l.random = 'me'
-
     def test_maybe_const(self):
         l = DeferredList()
         self.assertIsNot(l.maybe_const(), l)

@@ -31,7 +31,8 @@ class ContinuationStore(defaultdict):
         func = args[0]
         name = kwargs.get('name') or func.__name__
         if name in self or name == 'noop' or not name:
-            raise ValueError('A continuation named "{}" already exists.'.format(name))
+            raise ValueError('A continuation named "{}" already exists.'
+                             .format(name))
         self[name] = func
         return func
 

@@ -134,7 +134,7 @@ class TestRuleMutex(TestCollectionBase):
     def test_weight(self):
         r = self.cls(self.rules)
         self.assertEqual(r.weight, min(*(x.weight for x in self.rules)))
-        y = filter(lambda z: z.weight > -4, self.rules)
+        y = [z for z in self.rules if z.weight > -4]
         r = self.cls(y)
         self.assertEqual(r.weight, min(*(x.weight for x in y)))
 

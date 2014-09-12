@@ -14,28 +14,29 @@ class RuleQueryMixin(object):
 
     if settings.RULES_OWNER_MODEL:
         def for_owner(self, owner):
-            """Returns both system rules and rules belonging to the given owner."""
-            return self.filter(models.Q(owner=owner) | models.Q(owner__isnull=True))
- 
+            """Returns system rules and rules belonging to the given owner."""
+            return self.filter(models.Q(owner=owner) |
+                               models.Q(owner__isnull=True))
+
         def system(self):
-            """Returns only system rules (rules without an associated owner)."""
-            return self.filter(customer__isnull=True)
+            """Returns only rules without an associated owner."""
+            return self.filter(owner__isnull=True)
 
 
 class RuleSet(RuleQueryMixin, QuerySet):
     """
-    Queryset for rules with a few special filters (from :class:`RuleQueryMixin` and a bulk
-    :meth:`matches` method.
+    Queryset for rules with a few special filters (from :class:`RuleQueryMixin`
+    and a bulk :meth:`matches` method.
     """
 
     def matches(self, *objects, **extra):
-        """Checks the given objects against all the rules in the QuerySet, returning matches."""
+        """Checks all the rules in the QuerySet, returning matches."""
         info = {'objects': objects, 'extra': extra}
         return [r for r in self if r._match(info)]
 
 
 class RuleManager(RuleQueryMixin, models.Manager):
-    """Manager with a couple of helpful methods for working with :class:`Rule`s."""
+    """Manager with helpful methods for working with :class:`Rule`s."""
 
     def get_query_set(self):
         """Default ``QuerySet`` type for rules is :class:`RuleSet`."""
@@ -44,23 +45,25 @@ class RuleManager(RuleQueryMixin, models.Manager):
 
 class BaseRule(CoreRule, models.Model):
     """Represents a business rule."""
-    trigger = models.CharField(max_length=100, help_text='The trigger determines when '
-                               'this rule is checked, e.g. when a row in the database '
-                               'is inserted or changed.')
-    continuation = models.CharField(max_length=100, help_text='The name of the action '
-                                    'called when this rule is matched.')
+    trigger = models.CharField(max_length=100, help_text=
+                               'The trigger determines when this rule is'
+                               ' checked, e.g. when a row in the database'
+                               ' is inserted or changed.')
+    continuation = models.CharField(max_length=100, help_text='The action to'
+                                    ' be called when this rule is matched.')
     if settings.RULES_OWNER_MODEL:
-        owner = models.ForeignKey(settings.RULES_OWNER_MODEL, blank=True, null=True,
-                                  related_name='+')
-    description = models.CharField(max_length=50, help_text='A short description of '
-                                   'the purpose of the rule.')
-    message = models.CharField(max_length=255, blank=True,
-                               help_text='A message explaining why the rule was matched, '
-                               'or what a match means, and how to resolve it. May be left '
-                               'blank if description contains sufficient information.')
-    value = JSONTextField(blank=True, help_text='A helper value which will be '
-                          'passed to the continuation when the rule is matched.')
-    tree = models.TextField(help_text='The string representation of the condition tree.')
+        owner = models.ForeignKey(settings.RULES_OWNER_MODEL, blank=True,
+                                  null=True, related_name='+')
+    description = models.CharField(max_length=50, help_text='A short '
+                                   'description of the purpose of the rule.')
+    message = models.CharField(max_length=255, blank=True, help_text=
+                               'A message explaining why the rule was matched,'
+                               ' or what a match means, and how to resolve it.'
+                               ' May be left blank if description contains'
+                               ' sufficient information.')
+    value = JSONTextField(blank=True, help_text='A helper value to be passed'
+                          ' to the continuation when the rule is matched.')
+    tree = models.TextField(help_text='The string form the condition tree.')
     weight = models.IntegerField(default=0, blank=True)
 
     objects = RuleManager()
@@ -69,7 +72,7 @@ class BaseRule(CoreRule, models.Model):
         models.Model.__init__(self, *args, **kwargs)
 
     def __str__(self):
-        return self.description
+        return '{0.trigger}->{0.continuation}: {0.description}'.format(self)
 
     @property
     def is_system(self):
@@ -101,17 +104,21 @@ def expand_model_key(key):
         key, sig = key.split(':')
     parts = key.split('.')
     if parts[0] in ('create', 'update', 'delete') and len(parts) == 3:
+
         if sig in ('pre_save', 'pre_delete'):
             sig = ':' + sig
         elif sig not in ('post_delete', 'post_save', ''):
             raise ValueError('Unsupported signal: "{}"'.format(sig))
-        is_delete = parts[0] == 'delete'
-        if (is_delete and 'save' in sig) or (not is_delete and 'delete' in sig):
+
+        is_del = parts[0] == 'delete'
+        if (is_del and 'save' in sig) or (not is_del and 'delete' in sig):
             msg = 'Signal does not match event: "{}" vs. "{}"'
             raise ValueError(msg.format(parts[0], sig))
         elif 'post' in sig:
             sig = ''
-        keys = ['#', '#.{1}.{2}', '#.{1}.#', '{0}.#', '{0}.{1}.#', '{0}.{1}.{2}']
+
+        keys = ['#', '#.{1}.{2}', '#.{1}.#', '{0}.#',
+                '{0}.{1}.#', '{0}.{1}.{2}']
         return tuple(k.format(*parts) + sig for k in keys)
     return NotImplemented
 
@@ -119,8 +126,8 @@ def expand_model_key(key):
 if settings.RULES_CONCRETE_MODELS:
     class Rule(BaseRule):
         def get_absolute_url(self):
-            """For now we'll just use the admin, but eventually we'll want a view customers can use."""
             return reverse('admin:rule_reactor_rule_change', args=[self.pk])
 
     RuleCache.default = RuleCache(Rule.objects)
-    TopicalRuleCache.default = TopicalRuleCache(RuleCache.default, [expand_model_key])
+    TopicalRuleCache.default = TopicalRuleCache(RuleCache.default,
+                                                [expand_model_key])

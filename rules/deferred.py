@@ -3,13 +3,12 @@ import re
 import six
 from django.contrib.contenttypes.models import ContentType
 
-__all__ = ['Selector', 'Function', 'DeferredValue', 'DeferredDict', 'DeferredList', 'ChainError']
+__all__ = ['Selector', 'Function', 'DeferredValue', 'DeferredDict',
+           'DeferredList', 'ChainError']
 
 
 @six.add_metaclass(abc.ABCMeta)
 class DeferredValue(object):
-    __slots__ = ()
-
     @abc.abstractmethod
     def maybe_const(self):  # pragma: no cover
         return self
@@ -18,56 +17,57 @@ class DeferredValue(object):
     def _get_value(self, info):  # pragma: no cover
         raise NotImplementedError
 
-    def get_value(self, info):
+    def _get_deferred_value(self, info):
         try:
             return info[id(self)]
         except KeyError:
             result = info[id(self)] = self._get_value(info)
             return result
 
+    def get_value(self, info):
+        value = self.maybe_const()
+        if value is not self:
+            self.get_value = lambda i: value
+            return value
+        self.get_value = self._get_deferred_value
+        return self.get_value(info)
+
     def __ne__(self, other):
-        x = self.__eq__(other)
-        if x is NotImplemented:  # pragma: no cover
-            return x
-        return not x
+        return not self.__eq__(other)
 
 
 class DeferredDict(dict, DeferredValue):
-    __slots__ = ()
-
     def maybe_const(self):
         result = {}
-        items = self.items() if six.PY3 else self.iteritems()
-        for k, v in items:
+        for k, v in six.iteritems(self):
+            vc = v
             if isinstance(v, DeferredValue):
-                v = v.maybe_const()
-            # If there's even one deferred value left, this can't be a const.
-            if isinstance(v, DeferredValue):
-                return self
-            result[k] = v
+                vc = v.maybe_const()
+                if vc is v:
+                    return self
+            result[k] = vc
         return result
 
     def _get_value(self, info):
-        items = self.items() if six.PY3 else self.iteritems()
-        return {k: v.get_value(info) if isinstance(v, DeferredValue) else v for k, v in items}
+        return {k: v.get_value(info) if isinstance(v, DeferredValue) else v
+                for k, v in six.iteritems(self)}
 
 
 class DeferredList(list, DeferredValue):
-    __slots__ = ()
-
     def maybe_const(self):
         result = []
         for v in self:
+            vc = v
             if isinstance(v, DeferredValue):
-                v = v.maybe_const()
-            # If there's even one deferred value left, this can't be a const.
-            if isinstance(v, DeferredValue):
-                return self
-            result.append(v)
+                vc = v.maybe_const()
+                if vc is v:
+                    return self
+            result.append(vc)
         return result
 
     def _get_value(self, info):
-        return [x.get_value(info) if isinstance(x, DeferredValue) else x for x in self]
+        return [x.get_value(info) if isinstance(x, DeferredValue) else x
+                for x in self]
 
 
 class ChainError(Exception):
@@ -75,63 +75,55 @@ class ChainError(Exception):
 
 
 class Selector(DeferredValue):
-    __slots__ = ('stype', 'chain', 'first')
-
     def __init__(self, selector_type, chain):
-        self.stype = selector_type
-        self.chain = (chain.maybe_const() if isinstance(chain, DeferredValue) else chain) or ()
+        self.chain = (chain if isinstance(chain, DeferredValue)
+                      else DeferredList(chain or ()))
         if isinstance(selector_type, (list, tuple)):
             self.set_first(*selector_type)
         else:
             self.set_first(selector_type)
 
     def set_first(self, stype, arg=None):
+        self.stype, self.arg = stype, arg
         if isinstance(stype, DeferredValue):
-            stype = stype.maybe_const()
-            if isinstance(stype, DeferredValue):
-                self.first = lambda info: stype.get_value(info)
-            else:
-                self.first = lambda info: stype
+            self.first = stype.get_value
         elif isinstance(stype, int):
             self.first = lambda info: info['objects'][stype]
         elif stype == 'extra':
             self.first = lambda info: info['extra']
         elif stype == 'const':
             self.first = lambda info: arg
-            self.stype = (stype, arg)
-            if self.chain:
-                raise ValueError('Chains are not allowed on "const" selectors')
+            assert not self.chain
         elif stype == 'model':
-            try:
-                m = ContentType.objects.get_by_natural_key(*arg.split('.')).model_class()
-                m._meta
-            except:
-                raise ValueError('Invalid model for model selector: "{}"'.format(arg))
+            m = arg.split('.')
+            m = ContentType.objects.get_by_natural_key(*m).model_class()
             self.first = lambda info: m
         else:
-            raise NotImplementedError('Unknown selector type: "{}"'.format(stype))
+            raise NotImplementedError('Unknown selector type: "{}"'
+                                      .format(stype))
 
     def __str__(self):
         stype = self.stype
-        if isinstance(stype, (list, tuple)):
-            stype = ':'.join(str(x) for x in stype)
-        chain = self.chain or ''
-        if chain:
-            chain = '.' + '.'.join(str(y) for y in chain)
-        return '{}{}'.format(stype, chain)
+        if stype in ('const', 'model'):
+            stype = '{}:{}'.format(stype, self.arg)
+        if self.chain:
+            return '{}.{}'.format(stype, '.'.join(str(y) for y in self.chain))
+        return str(stype)
 
     def maybe_const(self):
-        if isinstance(self.stype, (list, tuple)):
-            if self.stype[0] == 'const' or (self.stype[0] == 'model' and not self.chain):
+        if not self.chain:
+            if self.stype in ('const', 'model'):
                 return self.first(None)
-        elif isinstance(self.stype, DeferredValue) and not self.chain:
-            return self.stype.maybe_const()
+            elif isinstance(self.stype, DeferredValue):
+                val = self.stype.maybe_const()
+                if val is not self.stype:
+                    return val
         return self
 
     def _get_value(self, info):
         obj = self.first(info)
         try:
-            for getter in self.chain:
+            for getter in self.chain.get_value(info):
                 if isinstance(getter, (list, tuple)):
                     getter, args = getter
                     if isinstance(args, DeferredValue):
@@ -155,16 +147,10 @@ class Selector(DeferredValue):
             raise ChainError(ex)
         return obj
 
-    def __eq__(self, other):
-        try:
-            return self is other or (self.stype == other.stype and self.chain == other.chain)
-        except:
-            if isinstance(other, DeferredValue):
-                return False
-            return NotImplemented  # pragma: no cover
-
-    def __hash__(self):
-        return hash((self.stype, tuple(self.chain)))
+    def __eq__(self, obj):
+        return self is obj or (self.stype == getattr(obj, 'stype', None) and
+                               self.arg == getattr(obj, 'arg', None) and
+                               self.chain == getattr(obj, 'chain', None))
 
 
 class Function(DeferredValue):
@@ -187,33 +173,24 @@ class Function(DeferredValue):
         'regex': re.compile
     }
 
-    __slots__ = ('func', 'name', 'args')
-
     def __init__(self, func, args):
-        if func not in self.FUNCS:
-            raise ValueError('"{}" is not a recognized function.'.format(func))
         self.func = self.FUNCS[func]
         self.name = func
-        self.args = (args.maybe_const() if isinstance(args, DeferredValue) else args) or ()
+        self.args = (args if isinstance(args, DeferredValue)
+                     else DeferredList(args or ()))
+
+    def __str__(self):
+        return self.name + '(' + ', '.join(str(a) for a in self.args) + ')'
 
     def maybe_const(self):
-        if not isinstance(self.args, DeferredValue):
-            return self.func(*self.args)
-        return self
-
-    def _get_value(self, info):
-        args = self.args
-        if isinstance(args, DeferredValue):
-            args = args.get_value(info)
+        args = self.args.maybe_const()
+        if args is self.args:
+            return self
         return self.func(*args)
 
-    def __eq__(self, other):
-        try:
-            return self is other or (self.func is other.func and self.args == other.args)
-        except:
-            if isinstance(other, DeferredValue):
-                return False
-            return NotImplemented  # pragma: no cover
+    def _get_value(self, info):
+        return self.func(*self.args.get_value(info))
 
-    def __hash__(self):
-        return hash((self.func, tuple(self.args)))
+    def __eq__(self, obj):
+        return self is obj or (self.func == getattr(obj, 'func', None) and
+                               self.args == getattr(obj, 'args', None))

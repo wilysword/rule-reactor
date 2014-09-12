@@ -1,6 +1,7 @@
 from collections import defaultdict
 
-__all__ = ['RuleList', 'RuleMutex', 'expand_key', 'RuleCache', 'TopicalRuleCache']
+__all__ = ['RuleList', 'RuleMutex', 'expand_key', 'RuleCache',
+           'TopicalRuleCache']
 
 
 def _sortkey(rule):

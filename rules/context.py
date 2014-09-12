@@ -30,11 +30,9 @@ class RuleChecker(object):
             cache = cls.default
         else:
             raise ValueError('No rules, rule cache, or rule source provided.')
-        used = {'cls', 'rules', 'cache', 'queryset', 'source', 'context', 'continuations'}
-        context = {}
-        for k in kwargs:
-            if k not in used:
-                context[k] = kwargs[k]
+        used = {'cls', 'rules', 'cache', 'queryset', 'source',
+                'context', 'continuations'}
+        context = {k: kwargs[k] for k in kwargs if k not in used}
         context.update(kwargs.get('context', ()))
         self.context = context
         self.cache = cache
@@ -42,8 +40,7 @@ class RuleChecker(object):
 
     def check(self, trigger, *objects, **extra):
         info = {'objects': objects, 'extra': extra}
-        rules = self.cache[trigger]
-        matches = rules._matches(info)
+        matches = self.cache[trigger]._matches(info)
         for rule in matches:
             try:
                 rule.continue_(info, self.continuations)
@@ -64,9 +61,8 @@ def check_rules(*args, **kwargs):
     if not args:
         return lambda func: check_rules(func, **kwargs)
     elif len(args) != 1 or not callable(args[0]):
-        raise TypeError('Requires one, and only one, callable positional argument')
+        raise TypeError('Requires exactly one callable positional argument')
     func = args[0]
-    # Validate arguments using the constructor.
     rc = RuleChecker(**kwargs)
 
     @functools.wraps(func)
@@ -87,12 +83,15 @@ class SignalChecker(RuleChecker):
         self.objects = {}
 
     def track(self, obj):
-        """Add an object to tracking so that edits can be properly distinguished from adds."""
+        """
+        Tracks an object so that edits can be properly distinguished from adds.
+        """
         model = type(obj)
         is_tracked = any(issubclass(model, m) for m in self.models)
         if self.models and not is_tracked:
-            msg = 'This checker can only track objects of the following types: {}'
-            raise ValueError(msg.format(', '.join(m.__name__ for m in self.models)))
+            msg = 'This checker only tracks objects of the following types: {}'
+            model_names = ', '.join(m.__name__ for m in self.models)
+            raise ValueError(msg.format(model_names))
         self._track(instance=obj, sender=model)
 
     def _track(self, **kwargs):
@@ -101,8 +100,8 @@ class SignalChecker(RuleChecker):
             self.objects[(kwargs['sender'], obj.pk)] = deepcopy(obj)
 
     def _get_trigger(self, eventtype, model, sig=None):
-        meta = model._meta.concrete_model._meta
-        key = '{}.{}.{}'.format(eventtype, meta.app_label, meta.object_name.lower())
+        m = model._meta.concrete_model._meta
+        key = '{}.{}.{}'.format(eventtype, m.app_label, m.object_name.lower())
         if sig:
             key += ':' + sig
         return key
@@ -165,8 +164,8 @@ class SignalChecker(RuleChecker):
 
     def __enter__(self):
         """
-        Connects signals so the RuleChecker will know when to check rules and whether the
-        action is an add, edit or delete.
+        Connects signals so the RuleChecker will know when to check rules and
+        whether the action is an add, edit or delete.
         """
         if self.models:
             for m in self.models:
@@ -176,7 +175,7 @@ class SignalChecker(RuleChecker):
         return super(SignalChecker, self).__enter__()
 
     def __exit__(self, *exc_info):
-        """Disconnects signals and bulk creates occurrences, if their PKs aren't needed."""
+        """Disconnects signals."""
         if self.models:
             for m in self.models:
                 self._disconnect(m)
@@ -189,7 +188,7 @@ def check_signals(*args, **kwargs):
     if not args:
         return lambda func: check_signals(func, **kwargs)
     elif len(args) != 1 or not callable(args[0]):
-        raise TypeError('Requires one, and only one, callable positional argument')
+        raise TypeError('Requires exactly one callable positional argument')
     func = args[0]
     models = kwargs.pop('models', None) or ()
     # Validate arguments using the constructor.

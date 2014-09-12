@@ -23,5 +23,5 @@ except ImportError:
     pass
 else:
     TEST_RUNNER = 'django_nose.NoseTestSuiteRunner'
-    NOSE_ARGS = ('rules', '--with-coverage', '--cover-erase', '--cover-package=rules')
+    NOSE_ARGS = ('--with-coverage', '--cover-erase', '--cover-package=rules')
     INSTALLED_APPS += ('django_nose',)

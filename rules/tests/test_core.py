@@ -21,10 +21,6 @@ class TestCondition(TestCase):
         om = {'!=', '==', 'like', 're', 'in', '>=', '<', '<=', '>', 'bool', 'exists'}
         self.assertEqual(set(Condition.OPERATOR_MAP), om)
 
-    def test_kwargs(self):
-        kwargs = set(('left', 'right', 'negated', 'operator'))
-        self.assertEqual(set(Condition.KWARGS), kwargs)
-
     def test_is_unary(self):
         unaries = ('bool', 'exists', 'does not exist')
         self.assertEqual(set(unaries), Condition.UNARY_OPERATORS)
@@ -37,10 +33,9 @@ class TestCondition(TestCase):
         self.assertRaises(TypeError, Condition, random_kwarg='random value')
 
     def test_init_left(self):
-        self.assertRaises(ValueError, Condition, operator='bool', left=30)
         l = Function('percent', (30, 100))
         c = Condition(left=l, operator='bool')
-        self.assertEqual(c.left, 30)
+        self.assertIs(c.left, l)
         self.assertIs(c.right, None)
         l = Selector(0, None)
         c = Condition(left=l, operator='bool')
@@ -64,15 +59,13 @@ class TestCondition(TestCase):
             c = Condition(operator=op, **kwargs)
             self.assertIs(c._eval, Condition.OPERATOR_MAP[op])
             self.assertIs(c.negated, op in Condition.NEGATED_OPERATORS)
-        self.assertRaises(NotImplementedError, Condition, operator='*', **kwargs)
+        self.assertRaises(KeyError, Condition, operator='*', **kwargs)
 
     def test_init_right(self):
         l = Selector(0, None)
         r = Selector(('const', 5), None)
-        self.assertRaises(ValueError, Condition, left=l, operator='in')
-        self.assertRaises(ValueError, Condition, left=l, operator='in', right=[2, 3])
         c = Condition(left=l, right=r, operator='==')
-        self.assertEqual(c.right, 5)
+        self.assertIs(c.right, r)
         r = Selector(1, None)
         c = Condition(left=l, right=r, operator='==')
         self.assertIs(c.right, r)
@@ -84,7 +77,6 @@ class TestCondition(TestCase):
         self.assertEqual(len(cn), 2)
         self.assertEqual(cn.connector, ConditionNode.default)
         self.assertEqual(len(Condition.C()), 0)
-        self.assertRaises(ValueError, Condition.C, [1, 2])
 
 
 class TestConditionMethods(CollectMixin, TestCase):
@@ -113,11 +105,9 @@ class TestConditionMethods(CollectMixin, TestCase):
         ct = self.c(**kwargs)
         cf = self.c(negated=True, **kwargs)
         for x in true:
-            print 'true', x
             self.assertTrue(ct.evaluate(*x))
             self.assertFalse(cf.evaluate(*x))
         for x in false:
-            print 'false', x
             self.assertFalse(ct.evaluate(*x))
             self.assertTrue(cf.evaluate(*x))
 
@@ -199,9 +189,9 @@ class TestConditionNode(TestCase):
         n.add(child, OR)
         self.assertEqual(n.children, [child])
         self.assertEqual(n.connector, OR)
-        # unless the connector is different
+        # even with different connector
         n.add(child, AND)
-        self.assertEqual(n.children, [child, child])
+        self.assertEqual(n.children, [child])
         self.assertEqual(n.connector, AND)
 
     def test_add_third(self):
