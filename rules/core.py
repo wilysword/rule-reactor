@@ -4,7 +4,7 @@ import operator
 
 from django.utils import tree
 
-from .deferred import DeferredValue, ChainError
+from .deferred import Deferred, ChainError
 
 logger = logging.getLogger(__name__)
 
@@ -196,12 +196,12 @@ class Rule(object):
     def _build_tree(self, conditions):
         if hasattr(conditions, '_evaluate'):
             return conditions
-        elif not conditions:
+        elif conditions is None:
             # Make it so the rule is never matched.
             return ConditionNode(connector=OR)
         else:
-            # TODO parse
-            return root
+            from .parser import parse_rule
+            return parse_rule(conditions)
 
     def match(self, *objects, **extra):
         """Matches the given arguments against this rule."""
@@ -213,7 +213,7 @@ class Rule(object):
         # used to affect control flow (though that shouldn't be too common).
         cont = continuations[self.continuation]
         value = self.value
-        if isinstance(value, DeferredValue):
+        if isinstance(value, Deferred):
             value = value.get_value(info)
         cont(self, info, value)
 
@@ -229,11 +229,11 @@ class Rule(object):
 
 def rule(trigger, **kwargs):
     def decorator(func):
-        class conditions:
+        class condition:
             @staticmethod
             def _evaluate(info):
                 return func(*info['objects'], **info['extra'])
-        kwargs['conditions'] = conditions
+        kwargs['conditions'] = condition
         r = Rule(trigger, **kwargs)
         if 'cache' in kwargs:
             kwargs['cache'].add_source(trigger, r)

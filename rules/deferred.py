@@ -3,12 +3,12 @@ import re
 import six
 from django.contrib.contenttypes.models import ContentType
 
-__all__ = ['Selector', 'Function', 'DeferredValue', 'DeferredDict',
-           'DeferredList', 'ChainError']
+__all__ = ['Selector', 'Function', 'DeferredValue', 'Deferred',
+           'DeferredDict', 'DeferredList', 'ChainError']
 
 
 @six.add_metaclass(abc.ABCMeta)
-class DeferredValue(object):
+class Deferred(object):
     @abc.abstractmethod
     def maybe_const(self):  # pragma: no cover
         return self
@@ -32,16 +32,13 @@ class DeferredValue(object):
         self.get_value = self._get_deferred_value
         return self.get_value(info)
 
-    def __ne__(self, other):
-        return not self.__eq__(other)
 
-
-class DeferredDict(dict, DeferredValue):
+class DeferredDict(dict, Deferred):
     def maybe_const(self):
         result = {}
         for k, v in six.iteritems(self):
             vc = v
-            if isinstance(v, DeferredValue):
+            if isinstance(v, Deferred):
                 vc = v.maybe_const()
                 if vc is v:
                     return self
@@ -49,16 +46,16 @@ class DeferredDict(dict, DeferredValue):
         return result
 
     def _get_value(self, info):
-        return {k: v.get_value(info) if isinstance(v, DeferredValue) else v
+        return {k: v.get_value(info) if isinstance(v, Deferred) else v
                 for k, v in six.iteritems(self)}
 
 
-class DeferredList(list, DeferredValue):
+class DeferredList(list, Deferred):
     def maybe_const(self):
         result = []
         for v in self:
             vc = v
-            if isinstance(v, DeferredValue):
+            if isinstance(v, Deferred):
                 vc = v.maybe_const()
                 if vc is v:
                     return self
@@ -66,8 +63,13 @@ class DeferredList(list, DeferredValue):
         return result
 
     def _get_value(self, info):
-        return [x.get_value(info) if isinstance(x, DeferredValue) else x
+        return [x.get_value(info) if isinstance(x, Deferred) else x
                 for x in self]
+
+
+class DeferredValue(Deferred):
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 
 class ChainError(Exception):
@@ -76,7 +78,7 @@ class ChainError(Exception):
 
 class Selector(DeferredValue):
     def __init__(self, selector_type, chain):
-        self.chain = (chain if isinstance(chain, DeferredValue)
+        self.chain = (chain if isinstance(chain, Deferred)
                       else DeferredList(chain or ()))
         if isinstance(selector_type, (list, tuple)):
             self.set_first(*selector_type)
@@ -124,10 +126,8 @@ class Selector(DeferredValue):
         obj = self.first(info)
         try:
             for getter in self.chain.get_value(info):
-                if isinstance(getter, (list, tuple)):
+                if isinstance(getter, list):
                     getter, args = getter
-                    if isinstance(args, DeferredValue):
-                        args = args.get_value(info)
                 else:
                     args = ()
                 try:
@@ -176,7 +176,7 @@ class Function(DeferredValue):
     def __init__(self, func, args):
         self.func = self.FUNCS[func]
         self.name = func
-        self.args = (args if isinstance(args, DeferredValue)
+        self.args = (args if isinstance(args, Deferred)
                      else DeferredList(args or ()))
 
     def __str__(self):

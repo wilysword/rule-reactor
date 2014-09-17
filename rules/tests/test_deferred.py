@@ -2,20 +2,23 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from rules.deferred import *
 
+dlist = lambda *a: DeferredList(a)
+
 
 class TestDeferred(TestCase):
     def test_init(self):
         self.assertRaises(TypeError, DeferredValue)
 
     def test_issubclass(self):
-        self.assertTrue(issubclass(DeferredDict, DeferredValue))
-        self.assertTrue(issubclass(DeferredList, DeferredValue))
+        self.assertTrue(issubclass(DeferredDict, Deferred))
+        self.assertTrue(issubclass(DeferredList, Deferred))
+        self.assertTrue(issubclass(DeferredValue, Deferred))
         self.assertTrue(issubclass(Selector, DeferredValue))
         self.assertTrue(issubclass(Function, DeferredValue))
 
     def test_isinstance(self):
-        self.assertTrue(isinstance(DeferredDict(), DeferredValue))
-        self.assertTrue(isinstance(DeferredList(), DeferredValue))
+        self.assertTrue(isinstance(DeferredDict(), Deferred))
+        self.assertTrue(isinstance(DeferredList(), Deferred))
         self.assertTrue(isinstance(Selector(('const', 0), ()), DeferredValue))
         self.assertTrue(isinstance(Function('min', (0, 1)), DeferredValue))
 
@@ -148,13 +151,16 @@ class TestSelector(TestCase):
 
     def test_get_value_callable_simple(self):
         s = Selector(0, [('__str__', 42)])
+        # Passing a tuple to represent a call is unexpected
+        self.assertRaises(ChainError, s.get_value, {'objects': [int]})
+        s = Selector(0, [dlist('__str__', 42)])
         self.assertEqual(s.get_value({'objects': [int]}), '42')
         # Function will raise a TypeError, gets converted to ChainError.
         self.assertRaises(ChainError, s.get_value, {'objects': [str]})
 
     def test_get_value_callable_args(self):
         s = Selector(('model', 'contenttypes.contenttype'),
-                     ('objects', ('values', ['app_label', 'model'])))
+                     ('objects', ['values', ['app_label', 'model']]))
         x = s.get_value({})
         self.assertTrue(x)
         self.assertTrue(isinstance(x[0], dict))
@@ -182,7 +188,7 @@ class TestSelector(TestCase):
 
     def test_get_value_callable_kwargs(self):
         s = Selector(('model', 'contenttypes.contenttype'),
-                     ('objects', ('filter', {'app_label': 'contenttypes'})))
+                     ('objects', ['filter', {'app_label': 'contenttypes'}]))
         x = s.get_value({})
         self.assertEqual(len(x), 1)
         self.assertTrue(isinstance(x[0], ContentType))
@@ -191,7 +197,7 @@ class TestSelector(TestCase):
     def test_get_value_callable_deferred_args(self):
         kwargs = DeferredDict({'app_label': Selector(0, None)})
         s = Selector(('model', 'contenttypes.contenttype'),
-                     ('objects', ('filter', kwargs)))
+                     ('objects', dlist('filter', kwargs)))
         self.assertRaises(ChainError, s.get_value, {})
         x = s.get_value({'objects': ['contenttypes']})
         self.assertEqual(len(x), 1)

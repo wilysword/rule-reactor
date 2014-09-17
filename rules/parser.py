@@ -8,12 +8,14 @@ Parses strings into rules according to the following syntax:
 
 <connector> ::= <ws> "AND" <ws> | <ws> "OR" <ws>
 
-<condition> ::= <value> <ws> <uop> | <value> <ws> <bop> <ws> <value>
+<condition> ::= <term> <ws> <uop> | <term> <ws> <bop> <ws> <term>
 
 <uop> ::= "exists" | "does not exist" | "bool"
 
 <bop> ::= "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in" |
           "like" | "re" | "not like"
+
+<term> ::= <deferred> | <simplevalue>
 
 <deferred> ::= <selector> | <function>
 
@@ -21,14 +23,17 @@ Parses strings into rules according to the following syntax:
 
 <deferredlist> ::= <deferred> | <deferred> <optws> "," <optws> <deferredlist>
 
-<selector> ::= "const:" <value> | <stype> <chain>
+<selector> ::= "const:" <simplevalue> | <stype> <chain>
 
 <stype> ::= "extra" | "object:" <integer> | "\" <integer> |
             "model:" <symbol> "." <symbol>
 
-<chain> ::= <chainident> | <chainident> ":" <value> | <chain> <chain>
+<chain> ::= <chainident> <chainterm> | <chainident> ":" <value> <chainterm> |
+            <chain> <chain>
 
 <chainident> ::= "." <integer> | "." <symbol>
+
+<chainterm> ::= "" | ";"
 
 <function> ::= <funcname> "(" <optws> <valuelist> <optws> ")" |
                <funcname> "(" <optws> ")"
@@ -41,6 +46,9 @@ Parses strings into rules according to the following syntax:
 
 <value> ::= <deferred> | <dict> | <list> | <date> | <time> | <datetime> |
             "null" | <number> | <bool> | <string>
+
+<simplevalue> ::= <simpledict> | <simplelist> | <date> | <time> | <datetime> |
+                  "null" | <number> | <bool> | <string>
 
 <list> ::= "[" <optws> "]" | "[" <optws> <valuelist> <optws> "]"
 
@@ -60,6 +68,8 @@ Other:
   * <ws> is one or more whitespace characters, such as would be matched in a
     regex by ``\s`` or would cause :meth:`str.isspace` to return ``True``.
   * <symbol> is any valid Python identifier, as using the regex ``[^\d\W]\w*``
+  * <simplelist> and <simpledict> are identical to <list> and <dict>, except
+    that any occurrence of <value> should be swapped for <simplevalue>
 """
 import re
 from collections import defaultdict
@@ -154,6 +164,12 @@ def parse_array(pinfo, string, index):
     return NotImplemented, index
 
 
+def parse_simple_array(pinfo, string, index):
+    if string[index] == '[':
+        return _parse_list(pinfo, string, index + 1, term=']', obj=[])
+    return NotImplemented, index
+
+
 def _pair(pinfo, string, index):
     key, index = pinfo['parsers']['string'](pinfo, string, index)
     if key is NotImplemented:
@@ -179,6 +195,25 @@ def parse_object(pinfo, string, index):
     return NotImplemented, index
 
 
+def parse_simple_object(pinfo, string, index):
+    if string[index] == '{':
+        obj, index = _parse_list(pinfo, string, index + 1, _pair, term='}')
+        return dict(obj), index
+    return NotImplemented, index
+
+_simple_values = (
+    ('object', parse_simple_object),
+    ('array', parse_simple_array),
+    ('string', parse_string),
+    ('datetime', parse_datetime),
+    ('date', parse_date),
+    ('time', parse_time),
+    ('number', parse_number),
+    ('const', parse_const),
+)
+_parse_simple = subparser(parseloop, parse=parseloop, parsers=_simple_values)
+
+
 def _parse_selector_chain(pinfo, string, index):
     chain = DeferredList()
     parse_value = pinfo['parse']
@@ -195,10 +230,7 @@ def _parse_selector_chain(pinfo, string, index):
             val, index = parse_value(pinfo, string, index)
             if val is NotImplemented:
                 raise _error(index)
-            elif isinstance(val, DeferredValue):
-                chain.append(DeferredList((attr, val)))
-            else:
-                chain.append((attr, val))
+            chain.append(DeferredList((attr, val)))
         else:
             chain.append(attr)
         if index < length and string[index] == ';':
@@ -209,10 +241,11 @@ _ident = r'[^\d\W]\w*'
 _chainmatch = re.compile('\.(-?[0-9]+|' + _ident + ')(:)?', re.U).match
 
 
-@with_parsers(_chain=_parse_selector_chain)
+@with_parsers(_chain=_parse_selector_chain, _simple_value=_parse_simple)
 def parse_selector(pinfo, string, index):
     m = _smatch(string, index)
     if m:
+        parsers = pinfo['parsers']
         stype = m.group()
         index += len(stype)
         if stype[0] == '\\':
@@ -230,7 +263,7 @@ def parse_selector(pinfo, string, index):
             index += len(model)
             stype = ('model', model)
         elif stype == 'const:':
-            value, index = pinfo['parse'](pinfo, string, index)
+            value, index = parsers['_simple_value'](pinfo, string, index)
             if value is NotImplemented:
                 raise _error(index, 'Invalid const selector at index {}')
             # const type doesn't accept a chain, so we'll just return now
@@ -238,7 +271,7 @@ def parse_selector(pinfo, string, index):
         elif stype != 'extra':
             stype = int(stype[7:])
 
-        chain, index = pinfo['parsers']['_chain'](pinfo, string, index)
+        chain, index = parsers['_chain'](pinfo, string, index)
         if isinstance(stype, DeferredValue) and not chain:
             # No point wrapping a deferred value in another deferred value.
             return stype, index
@@ -293,11 +326,14 @@ def parse_operator(pinfo, string, index):
 _ops = '==|!=|<=|<|>=|>|like|not like|re|exists|does not exist|bool|in|not in'
 _opmatch = re.compile('\s+(' + _ops + ')').match
 
+_parse_term = subparser(parseloop, parse=parseloop,
+                        parsers=_deferred+(('simple_value', _parse_simple),))
 
-@with_parsers(value=parse_value, operator=parse_operator)
+
+@with_parsers(term=_parse_term, operator=parse_operator)
 def parse_condition(pinfo, string, index):
-    parse_value = pinfo['parsers']['value']
-    left, index = parse_value(pinfo, string, index)
+    parse_term = pinfo['parsers']['term']
+    left, index = parse_term(pinfo, string, index)
     if left is NotImplemented:
         return NotImplemented, index
     elif not isinstance(left, DeferredValue):
@@ -315,7 +351,7 @@ def parse_condition(pinfo, string, index):
         index += 1
     if not ws:
         raise _error(index, 'Binary operator must have whitespace at index {}')
-    right, index = parse_value(pinfo, string, index)
+    right, index = parse_term(pinfo, string, index)
     if right is NotImplemented:
         raise _error(index, 'Expected deferred value at index {}')
     elif not isinstance(right, DeferredValue):
@@ -387,7 +423,7 @@ class RuleParser(Parser):
         while index < length and string[index].isspace():
             index += 1
         index = pinfo['parsers']['_deferred_list'](pinfo, string, index)[1]
-        tree, index = pinfo['parse'](pinfo, string, index)
+        tree, index = pinfo['parsers']['tree'](pinfo, string, index)
         tree.collapse()
         # Eat any extra whitespace at the end
         while index < length and string[index].isspace():

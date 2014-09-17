@@ -276,7 +276,6 @@ class TestParseSelector(TestCase):
                  'number': parse_number,
                  'function': parse_function,
                  'selector': parse_selector,
-                 '_chain': _parse_selector_chain,
             }}
 
     def p(self, string, index=0):
@@ -314,21 +313,21 @@ class TestParseSelector(TestCase):
         self.assertEqual(self.c('.heL_lo'), (dlist('heL_lo'), 7))
 
     def test_chain_arg(self):
-        self.assertEqual(self.c('.hey:1'), (dlist(('hey', 1)), 6))
-        self.assertEqual(self.c('.hey:1,2'), (dlist(('hey', 1)), 6))
+        self.assertEqual(self.c('.hey:1'), (dlist(dlist('hey', 1)), 6))
+        self.assertEqual(self.c('.hey:1,2'), (dlist(dlist('hey', 1)), 6))
         f = Function('min', (1, 2))
-        self.assertEqual(self.c('.hey:min(1,2)'), (dlist(['hey', f]), 13))
-        self.assertEqual(self.c('.hey:min( 1 , 2 )'), (dlist(['hey', f]), 17))
+        self.assertEqual(self.c('.hey:min(1,2)'), (dlist(dlist('hey', f)), 13))
+        self.assertEqual(self.c('.hey:min( 1 , 2 )'), (dlist(dlist('hey', f)), 17))
         self.assertRaises(ValueError, self.c, '.hey: min(1,2)')
         self.assertRaises(ValueError, self.c, '.hey:min (1,2)')
 
     def test_chain_multiple(self):
         self.assertEqual(self.c('.hey.hi'), (dlist('hey', 'hi'), 7))
         self.assertEqual(self.c('.2.hi'), (dlist(2, 'hi'), 5))
-        self.assertEqual(self.c('.hey:3.hi'), (dlist(('hey', 3.)), 7))
-        self.assertEqual(self.c('.hey:3..hi'), (dlist(('hey', 3.), 'hi'), 10))
-        self.assertEqual(self.c('.hey:3.3.hi'), (dlist(('hey', 3.3), 'hi'), 11))
-        self.assertEqual(self.c('.hey:3;.3.hi'), (dlist(('hey', 3), 3, 'hi'), 12))
+        self.assertEqual(self.c('.hey:3.hi'), (dlist(dlist('hey', 3.)), 7))
+        self.assertEqual(self.c('.hey:3..hi'), (dlist(dlist('hey', 3.), 'hi'), 10))
+        self.assertEqual(self.c('.hey:3.3.hi'), (dlist(dlist('hey', 3.3), 'hi'), 11))
+        self.assertEqual(self.c('.hey:3;.3.hi'), (dlist(dlist('hey', 3), 3, 'hi'), 12))
         f = Function('min', ())
         self.assertEqual(self.c('.hey.hi:min()'), (dlist('hey', dlist('hi', f)), 13))
         self.assertEqual(self.c('.hey.hi:min();'), (dlist('hey', dlist('hi', f)), 14))
@@ -372,9 +371,8 @@ class TestParseSelector(TestCase):
         self.assertEqual(self.p('const:"hey"'), (s, 11))
         self.assertEqual(self.p('sdfconst:"hey"sdfs', 3), (s, 14))
         self.assertEqual(self.p('const:"hey".hello.0'), (s, 11))
-        # This obviously makes no sense, but is syntactically valid.
-        s2 = Selector(('const', Function('min', ())), ())
-        self.assertEqual(self.p('const:min()'), (s2, 11))
+        self.assertRaises(ValueError, self.p, 'const:min()')
+        self.assertRaises(ValueError, self.p, 'const:[min()]')
 
     def test_selector_objects(self):
         s = Selector(0, ())
@@ -420,7 +418,7 @@ class TestParseDeferred(TestCase):
         self.assertEqual(self.p('object:0'), (Selector(0, ()), 8))
         self.assertEqual(self.p('helloobject:0goodbye', 5), (Selector(0, ()), 13))
         self.assertEqual(self.p('object :0'), NORES)
-        self.assertEqual(self.p(SAMPLES['selector']), (Selector(0, [('split', '.')]), 18))
+        self.assertEqual(self.p(SAMPLES['selector']), (Selector(0, [dlist('split', '.')]), 18))
         self.assertEqual(self.p('.hello'), NORES)
 
     def test_parse_function(self):
@@ -521,7 +519,7 @@ class TestParseCondition(TestCase):
             value = val + ' bool ' + val
             if key == 'selector':
                 d, i = self.p(value)
-                self.assertEqual(d.left, Selector(0, [('split', '.')]))
+                self.assertEqual(d.left, Selector(0, [dlist('split', '.')]))
                 self.assertEqual(i, 23)
                 self.assertIs(d.right, None)
             elif key == 'function':
@@ -532,19 +530,17 @@ class TestParseCondition(TestCase):
             else:
                 d = self.p(value)[0].left
                 v = parse_value(self.pinfo, val, 0)[0]
-                if isinstance(d, Selector):
-                    self.assertEqual(d.stype, 'const')
-                    self.assertEqual(d.arg, v)
-                else:
-                    self.assertEqual(d, v)
+                self.assertEqual(d.stype, 'const')
+                self.assertEqual(d.arg, v)
         self.assertEqual(self.p('hello bool'), NORES)
+        self.assertRaises(ValueError, self.p, '[min()] bool')
 
-    def test_samples_right(self):
+    def test_right(self):
         for key, val in SAMPLES.items():
             value = 'object:0 == ' + val
             if key == 'selector':
                 d, i = self.p(value)
-                self.assertEqual(d.right, Selector(0, [('split', '.')]))
+                self.assertEqual(d.right, Selector(0, [dlist('split', '.')]))
                 self.assertEqual(i, 30)
             elif key == 'function':
                 d, i = self.p(value)
@@ -553,12 +549,10 @@ class TestParseCondition(TestCase):
             else:
                 d = self.p(value)[0].right
                 v = parse_value(self.pinfo, val, 0)[0]
-                if isinstance(d, Selector):
-                    self.assertEqual(d.stype, 'const')
-                    self.assertEqual(d.arg, v)
-                else:
-                    self.assertEqual(d, v)
+                self.assertEqual(d.stype, 'const')
+                self.assertEqual(d.arg, v)
         self.assertRaises(ValueError, self.p, '"hello" == hello')
+        self.assertRaises(ValueError, self.p, '"hello" == [min()]')
 
     def test_bad_operator(self):
         # no space before operator
