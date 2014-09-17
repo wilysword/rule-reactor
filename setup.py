@@ -47,5 +47,5 @@ setup(
     packages=packages,
     data_files=data_files,
     # TODO how do we specify where to get mablibs?
-    install_requires=('django>=1.4.6', 'madlibs', 'six>=1.6')
+    install_requires=('django>=1.4.6', 'madlibs>=0.2.0', 'six>=1.6')
 )
