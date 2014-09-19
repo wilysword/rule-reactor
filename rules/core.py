@@ -4,6 +4,7 @@ import operator
 
 from django.utils import tree
 
+from madlibs.decorators import mixedmethod
 from .deferred import Deferred, ChainError
 
 logger = logging.getLogger(__name__)
@@ -84,15 +85,6 @@ class ConditionNode(tree.Node):
         return self
 
 
-class _unary_descriptor(object):
-    def __get__(self, instance, owner):
-        UOPS = owner.UNARY_OPERATORS
-        if instance is not None:
-            return instance.operator in UOPS
-        return lambda operator: operator in UOPS
-    __slots__ = ()
-
-
 def _exists(left, right):
     try:
         # Efficiency improvement for querysets.
@@ -136,7 +128,12 @@ class Condition(object):
                 conditions.append(a)
         return cls.Node(conditions)
 
-    is_unary = _unary_descriptor()
+    @mixedmethod(instance_property=True)
+    def is_unary(cond, operator=None):
+        try:
+            return (operator or cond.operator) in cond.UNARY_OPERATORS
+        except AttributeError:
+            return False
 
     def __init__(self, left, operator, right=None, negated=False):
         self.negated = bool(negated)
