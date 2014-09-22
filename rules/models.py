@@ -86,8 +86,10 @@ class BaseRule(CoreRule, models.Model):
 
     @conditions.setter
     def conditions(self, value):
-        self._tree = self._build_tree(value)
-        #TODO self.tree = self._tree.to_str()
+        from .formatter import format_rule
+        tree = self._build_tree(value)
+        self.tree = format_rule(tree)
+        self._tree = tree
 
     class Meta:
         abstract = True

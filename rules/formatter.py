@@ -20,7 +20,7 @@ def _format_list(obj, deferred):
 def _format_sel(obj, deferred):
     stype = obj.stype
     if isinstance(stype, int):
-        stype = str(stype)
+        stype = 'object:{}'.format(stype)
     elif isinstance(stype, DeferredValue):
         stype = _format_deferred(stype, deferred)
     elif stype == 'model':
@@ -31,7 +31,8 @@ def _format_sel(obj, deferred):
         chain = []
         for getter in obj.chain:
             if isinstance(getter, (list, tuple)):
-                chain.append(str(getter[0]) + ':' + _format(getter, deferred))
+                getter, arg = getter
+                chain.append(str(getter) + ':' + _format(arg, deferred))
             else:
                 chain.append(str(getter))
         return stype + '.' + ';.'.join(chain) + ';'
@@ -47,9 +48,9 @@ def _format_deferred(obj, deferred):
     try:
         index = deferred.index(obj) - 1
     except ValueError:
-        if isinstance(stype, Selector):
+        if isinstance(obj, Selector):
             v = _format_sel(obj, deferred)
-        elif isinstance(stype, Function):
+        elif isinstance(obj, Function):
             v = _format_func(obj, deferred)
         else:
             raise ValueError('Unknown deferred type')
@@ -60,7 +61,7 @@ def _format_deferred(obj, deferred):
 
 
 def _format_term(obj, deferred):
-    if obj.stype == 'const':
+    if getattr(obj, 'stype', '') == 'const':
         return _format(obj.arg, None)
     return _format_deferred(obj, deferred)
 
@@ -85,7 +86,7 @@ def _format(obj, deferred):
     elif obj is True:
         return 'true'
     elif obj is False:
-        return 'False'
+        return 'false'
     elif isinstance(obj, (int, float, datetime, date, time, Decimal)):
         return str(obj)
     elif isinstance(obj, string_types):
@@ -105,7 +106,7 @@ def _format(obj, deferred):
 
 def format_rule(obj):
     deferred = [[]]
-    string = _format_tree(obj)
+    string = _format_tree(obj, deferred)
     if deferred:
         string = 'with(' + ','.join(deferred[0]) + ') ' + string
     return string
