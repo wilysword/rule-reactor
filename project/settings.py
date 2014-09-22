@@ -18,10 +18,8 @@ DATABASES = {
 }
 
 try:
-    import django_nose
+    import discover_runner
 except ImportError:
     pass
 else:
-    TEST_RUNNER = 'django_nose.NoseTestSuiteRunner'
-    NOSE_ARGS = ('--with-coverage', '--cover-erase', '--cover-package=rules')
-    INSTALLED_APPS += ('django_nose',)
+    TEST_RUNNER = 'discover_runner.DiscoverRunner'

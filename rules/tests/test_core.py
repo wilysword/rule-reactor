@@ -24,7 +24,8 @@ class TestCondition(TestCase):
     def test_is_unary(self):
         unaries = ('bool', 'exists', 'does not exist')
         self.assertEqual(set(unaries), Condition.UNARY_OPERATORS)
-        ops = set(Condition.OPERATOR_MAP)
+        ops = set(Condition.OPERATOR_MAP).union(Condition.NEGATED_OPERATORS)
+        ops.add(None)
         for o in ops:
             assertion = self.assertTrue if o in unaries else self.assertFalse
             assertion(Condition.is_unary(o))

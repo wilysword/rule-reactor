@@ -118,7 +118,9 @@ class TestRuleChecker(TestCase):
 
 
 class TestSignalChecker(TestCase):
-    __test__ = False
+    def setUp(self):
+        from unittest import SkipTest
+        raise SkipTest
 
     def test_init(self):
         self.assertRaises(ValueError, RuleChecker, None)
