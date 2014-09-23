@@ -4,7 +4,7 @@ from django.test import TestCase
 from madlibs.test_utils import CollectMixin
 
 from rules.core import AND, OR, ConditionNode, Condition, Rule
-from rules.deferred import Function, Selector, DeferredDict, DeferredList
+from rules.deferred import Function, Selector, DeferredDict, DeferredTuple
 from rules.continuations import store
 from . import Dummy
 
@@ -148,7 +148,7 @@ class TestConditionMethods(CollectMixin, TestCase):
         false = ((None,), (False,), ([],))
         self._eval(true, false)
         f = DeferredDict({'app_label': Selector(0, None)})
-        chain = ('objects', DeferredList(('filter', f)))
+        chain = ('objects', DeferredTuple(('filter', f)))
         l = Selector(('model', 'contenttypes.contenttype'), chain)
         self._eval((('contenttypes',),), (('random',),), left=l)
 
@@ -450,7 +450,7 @@ class TestRule(TestCase):
         r.continue_(i, store)
         self.assertEqual(len(i), 3)
         self.assertEqual(i['value'], 'l')
-        self.assertEqual(i[id(s)], 'l')
+        self.assertEqual(i[s], 'l')
         self.assertEqual(r.cont1, 'l')
         self.assertIs(r.value, s)
 

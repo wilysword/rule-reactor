@@ -114,14 +114,13 @@ class TestValues(TestCase):
 
     def test_list(self):
         self.assertEqual(_format([], ()), '[]')
-        x = [3, 34.63, ['hello', date(2014, 10, 28)], '0']
+        x = (3, 34.63, ('hello', date(2014, 10, 28)), '0')
         y = _format(x, ())
         z = '[3,34.63,["hello",2014-10-28],"0"]'
         self.assertEqual(y, z)
         self.assertEqual(self.p(y), x)
-        w = x[:]
-        w[2] = tuple(w[2])
-        w = tuple(w)
+        w = list(x)
+        w[2] = list(w[2])
         y = _format(w, ())
         self.assertEqual(y, z)
         self.assertEqual(self.p(y), x)
@@ -129,7 +128,7 @@ class TestValues(TestCase):
     def test_dict(self):
         from collections import OrderedDict
         self.assertEqual(_format({}, ()), '{}')
-        x = OrderedDict([('hi', 3), ('yo', ['ouch']), ('now', {'then': date(2014, 5, 24)})])
+        x = OrderedDict([('hi', 3), ('yo', ('ouch',)), ('now', {'then': date(2014, 5, 24)})])
         y = _format(x, ())
         self.assertEqual(y, '{"hi":3,"yo":["ouch"],"now":{"then":2014-05-24}}')
         z = self.p(y)
@@ -150,7 +149,7 @@ class TestValues(TestCase):
         self.assertEqual(y, '\\0')
         self.assertEqual(d[0][0], 'const:42')
         self.assertEqual(self.p(d[0][0]), x)
-        x = Selector(('const', ['hey']), None)
+        x = Selector(('const', ('hey',)), None)
         y = _format(x, d)
         self.assertIs(d[2], x)
         self.assertEqual(y, '\\1')
@@ -162,7 +161,7 @@ class TestValues(TestCase):
         # Incorrect tuple lengths
         self.assertRaises(ValueError, _format, Selector(0, [(1, 2, 3)]), d)
         self.assertRaises(ValueError, _format, Selector(0, [(1,)]), d)
-        x = Selector(5, ['one', 'two', ['three', 'four']])
+        x = Selector(5, ['one', 'two', ('three', 'four')])
         y = _format(x, d)
         self.assertIs(d[1], x)
         self.assertEqual(y, '\\0')
@@ -184,7 +183,7 @@ class TestValues(TestCase):
 
     def test_extra_selector(self):
         d = [[]]
-        x = Selector('extra', ['one', 'two', ['three', 'four']])
+        x = Selector('extra', ['one', 'two', ('three', 'four')])
         y = _format(x, d)
         self.assertIs(d[1], x)
         self.assertEqual(y, '\\0')
@@ -193,7 +192,7 @@ class TestValues(TestCase):
 
     def test_model_selector(self):
         d = [[]]
-        x = Selector(('model', 'contenttypes.contenttype'), ['one', 'two', ['three', 'four']])
+        x = Selector(('model', 'contenttypes.contenttype'), ['one', 'two', ('three', 'four')])
         y = _format(x, d)
         self.assertIs(d[1], x)
         self.assertEqual(y, '\\0')
@@ -232,7 +231,7 @@ class TestRules(TestCase):
         s = Selector(0, None)
         c1 = Condition(Selector(s, ('hey',)), 'bool')
         c2 = Condition(Function('min', ('hi', 'bye')), '==', Selector('extra', ['greeting']))
-        c3 = Condition(Selector(1, ['split']), '!=', Selector(('const', ['one']), ()))
+        c3 = Condition(Selector(1, ['split']), '!=', Selector(('const', ('one',)), ()))
         c4 = Condition(Selector(s, ('ho',)), '>', Selector(2, None), negated=True)
         n1 = ConditionNode([c1, c2], connector='OR')
         n2 = ConditionNode([c3], connector='OR')

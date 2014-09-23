@@ -4,7 +4,11 @@ import six
 from django.contrib.contenttypes.models import ContentType
 
 __all__ = ['Selector', 'Function', 'DeferredValue', 'Deferred',
-           'DeferredDict', 'DeferredList', 'ChainError']
+           'DeferredDict', 'DeferredTuple', 'ChainError', 'StillDeferred']
+
+
+class StillDeferred(Exception):
+    pass
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -19,52 +23,62 @@ class Deferred(object):
 
     def _get_deferred_value(self, info):
         try:
-            return info[id(self)]
+            return info[self]
         except KeyError:
-            result = info[id(self)] = self._get_value(info)
+            result = info[self] = self._get_value(info)
             return result
 
     def get_value(self, info):
-        value = self.maybe_const()
-        if value is not self:
+        try:
+            value = self.maybe_const()
             self.get_value = lambda i: value
-            return value
-        self.get_value = self._get_deferred_value
+        except StillDeferred:
+            self.get_value = self._get_deferred_value
         return self.get_value(info)
+
+
+def _make_hashable(obj):
+    if isinstance(obj, dict):
+        return tuple((k, _make_hashable(v)) for k, v in six.iteritems(obj))
+    elif isinstance(obj, (list, tuple)):
+        return tuple(_make_hashable(v) for v in obj)
+    return obj
+
+
+def _make_hashwrapper(get_hashable):
+    def __hash__(self):
+        try:
+            h = self._hash
+        except AttributeError:
+            h = self._hash = hash(get_hashable(self))
+        return h
+    return __hash__
 
 
 class DeferredDict(dict, Deferred):
     def maybe_const(self):
-        result = {}
-        for k, v in six.iteritems(self):
-            vc = v
-            if isinstance(v, Deferred):
-                vc = v.maybe_const()
-                if vc is v:
-                    return self
-            result[k] = vc
-        return result
+        return {k: v.maybe_const() if isinstance(v, Deferred) else v
+                for k, v in six.iteritems(self)}
 
     def _get_value(self, info):
         return {k: v.get_value(info) if isinstance(v, Deferred) else v
                 for k, v in six.iteritems(self)}
 
+    __hash__ = _make_hashwrapper(_make_hashable)
+    __setitem__ = __delitem__ = NotImplemented
+    pop = popitem = clear = update = setdefault = NotImplemented
 
-class DeferredList(list, Deferred):
+
+class DeferredTuple(tuple, Deferred):
     def maybe_const(self):
-        result = []
-        for v in self:
-            vc = v
-            if isinstance(v, Deferred):
-                vc = v.maybe_const()
-                if vc is v:
-                    return self
-            result.append(vc)
-        return result
+        return tuple(x.maybe_const() if isinstance(x, Deferred) else x
+                     for x in self)
 
     def _get_value(self, info):
-        return [x.get_value(info) if isinstance(x, Deferred) else x
-                for x in self]
+        return tuple(x.get_value(info) if isinstance(x, Deferred) else x
+                     for x in self)
+
+    __hash__ = _make_hashwrapper(_make_hashable)
 
 
 class DeferredValue(Deferred):
@@ -79,7 +93,7 @@ class ChainError(Exception):
 class Selector(DeferredValue):
     def __init__(self, selector_type, chain):
         self.chain = (chain if isinstance(chain, Deferred)
-                      else DeferredList(chain or ()))
+                      else DeferredTuple(chain or ()))
         if isinstance(selector_type, (list, tuple)):
             self.set_first(*selector_type)
         else:
@@ -117,16 +131,14 @@ class Selector(DeferredValue):
             if self.stype in ('const', 'model'):
                 return self.first(None)
             elif isinstance(self.stype, DeferredValue):
-                val = self.stype.maybe_const()
-                if val is not self.stype:
-                    return val
-        return self
+                return self.stype.maybe_const()
+        raise StillDeferred(self)
 
     def _get_value(self, info):
         obj = self.first(info)
         try:
             for getter in self.chain.get_value(info):
-                if isinstance(getter, list):
+                if isinstance(getter, tuple):
                     getter, args = getter
                 else:
                     args = ()
@@ -151,6 +163,9 @@ class Selector(DeferredValue):
         return self is obj or (self.stype == getattr(obj, 'stype', None) and
                                self.arg == getattr(obj, 'arg', None) and
                                self.chain == getattr(obj, 'chain', None))
+
+    __hash__ = lambda s: (s.stype, _make_hashable(s.arg), s.chain)
+    __hash__ = _make_hashwrapper(__hash__)
 
 
 class Function(DeferredValue):
@@ -177,20 +192,19 @@ class Function(DeferredValue):
         self.func = self.FUNCS[func]
         self.name = func
         self.args = (args if isinstance(args, Deferred)
-                     else DeferredList(args or ()))
+                     else DeferredTuple(args or ()))
 
     def __str__(self):
         return self.name + '(' + ', '.join(str(a) for a in self.args) + ')'
 
     def maybe_const(self):
-        args = self.args.maybe_const()
-        if args is self.args:
-            return self
-        return self.func(*args)
+        return self.func(*self.args.maybe_const())
 
     def _get_value(self, info):
         return self.func(*self.args.get_value(info))
 
     def __eq__(self, obj):
-        return self is obj or (self.func == getattr(obj, 'func', None) and
+        return self is obj or (self.name == getattr(obj, 'name', None) and
                                self.args == getattr(obj, 'args', None))
+
+    __hash__ = _make_hashwrapper(lambda s: (s.name, s.args))

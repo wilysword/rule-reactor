@@ -2,7 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 from rules.deferred import *
 
-dlist = lambda *a: DeferredList(a)
+dlist = lambda *a: DeferredTuple(a)
 
 
 class TestDeferred(TestCase):
@@ -11,14 +11,14 @@ class TestDeferred(TestCase):
 
     def test_issubclass(self):
         self.assertTrue(issubclass(DeferredDict, Deferred))
-        self.assertTrue(issubclass(DeferredList, Deferred))
+        self.assertTrue(issubclass(DeferredTuple, Deferred))
         self.assertTrue(issubclass(DeferredValue, Deferred))
         self.assertTrue(issubclass(Selector, DeferredValue))
         self.assertTrue(issubclass(Function, DeferredValue))
 
     def test_isinstance(self):
         self.assertTrue(isinstance(DeferredDict(), Deferred))
-        self.assertTrue(isinstance(DeferredList(), Deferred))
+        self.assertTrue(isinstance(DeferredTuple(), Deferred))
         self.assertTrue(isinstance(Selector(('const', 0), ()), DeferredValue))
         self.assertTrue(isinstance(Function('min', (0, 1)), DeferredValue))
 
@@ -49,7 +49,7 @@ class TestSelector(TestCase):
         s = Selector(('model', model), ())
         self.assertIs(s.maybe_const(), ct.model_class())
         s1 = Selector(('model', model), ('objects',))
-        self.assertIs(s1.maybe_const(), s1)
+        self.assertRaises(StillDeferred, s1.maybe_const)
 
     def test_init_const(self):
         s = Selector('const', ())
@@ -74,7 +74,7 @@ class TestSelector(TestCase):
         self.assertRaises(TypeError, s.first, None)
         self.assertRaises(KeyError, s.first, {})
         self.assertEqual(s.first({'extra': 1}), 1)
-        self.assertIs(s.maybe_const(), s)
+        self.assertRaises(StillDeferred, s.maybe_const)
 
     def test_init_int(self):
         s = Selector(0, ())
@@ -83,7 +83,7 @@ class TestSelector(TestCase):
         self.assertRaises(KeyError, s.first, {})
         self.assertRaises(IndexError, s.first, {'objects': ()})
         self.assertEqual(s.first({'objects': [5]}), 5)
-        self.assertIs(s.maybe_const(), s)
+        self.assertRaises(StillDeferred, s.maybe_const)
 
     def test_init_deferred(self):
         s0 = Selector(0, ())
@@ -100,21 +100,21 @@ class TestSelector(TestCase):
     def test_maybe_const_deferred(self):
         s0 = Selector(0, ())
         s = Selector(s0, ())
-        self.assertIs(s.maybe_const(), s)
+        self.assertRaises(StillDeferred, s.maybe_const)
         s = Selector(s0, ('x',))
-        self.assertIs(s.maybe_const(), s)
+        self.assertRaises(StillDeferred, s.maybe_const)
         s1 = Selector(('const', 5), ())
         s = Selector(s1, ())
         self.assertEqual(s.maybe_const(), 5)
         s = Selector(s1, ('x',))
-        self.assertIs(s.maybe_const(), s)
+        self.assertRaises(StillDeferred, s.maybe_const)
 
     def test_init_chain(self):
         s1 = Selector('const', None)
         s2 = Selector(0, ('x',))
         s = Selector(0, [s1, s2])
-        self.assertEqual(s.chain, [s1, s2])
-        self.assertTrue(isinstance(s.chain, DeferredList))
+        self.assertEqual(s.chain, (s1, s2))
+        self.assertTrue(isinstance(s.chain, DeferredTuple))
 
     def test_eq(self):
         s1 = Selector(1, ['x'])
@@ -135,7 +135,7 @@ class TestSelector(TestCase):
         i[id(s)] = 4
         self.assertEqual(s.get_value(i), 5)
         s = Selector(0, None)
-        self.assertEqual(s.chain, DeferredList())
+        self.assertEqual(s.chain, DeferredTuple())
 
     def test_get_value_from_dict(self):
         s = Selector('extra', ('one',))
@@ -150,8 +150,8 @@ class TestSelector(TestCase):
         self.assertRaises(ChainError, s.get_value, {'extra': []})
 
     def test_get_value_callable_simple(self):
-        s = Selector(0, [('__str__', 42)])
-        # Passing a tuple to represent a call is unexpected
+        s = Selector(0, [['__str__', 42]])
+        # Passing a list to represent a call is unexpected
         self.assertRaises(ChainError, s.get_value, {'objects': [int]})
         s = Selector(0, [dlist('__str__', 42)])
         self.assertEqual(s.get_value({'objects': [int]}), '42')
@@ -160,7 +160,7 @@ class TestSelector(TestCase):
 
     def test_get_value_callable_args(self):
         s = Selector(('model', 'contenttypes.contenttype'),
-                     ('objects', ['values', ['app_label', 'model']]))
+                     ('objects', ('values', ['app_label', 'model'])))
         x = s.get_value({})
         self.assertTrue(x)
         self.assertTrue(isinstance(x[0], dict))
@@ -168,7 +168,7 @@ class TestSelector(TestCase):
         self.assertIn('model', x[0])
 
     def test_get_value_callable_deferred_args(self):
-        args = DeferredList(['app_label', Selector(0, ())])
+        args = DeferredTuple(['app_label', Selector(0, ())])
         s = Selector(('model', 'contenttypes.contenttype'),
                      ('objects', ('values', args)))
         self.assertRaises(ChainError, s.get_value, {})
@@ -188,7 +188,7 @@ class TestSelector(TestCase):
 
     def test_get_value_callable_kwargs(self):
         s = Selector(('model', 'contenttypes.contenttype'),
-                     ('objects', ['filter', {'app_label': 'contenttypes'}]))
+                     ('objects', ('filter', {'app_label': 'contenttypes'})))
         x = s.get_value({})
         self.assertEqual(len(x), 1)
         self.assertTrue(isinstance(x[0], ContentType))
@@ -220,11 +220,11 @@ class TestFunction(TestCase):
         f = Function('sum', [(1, 2, 3)])
         self.assertIs(f.func, sum)
         self.assertEqual(f.name, 'sum')
-        self.assertEqual(f.args, [(1, 2, 3)])
+        self.assertEqual(f.args, ((1, 2, 3),))
         self.assertRaises(KeyError, Function, 'random', ())
-        f = Function('sum', DeferredList([(1, 2, 3)]))
+        f = Function('sum', DeferredTuple([(1, 2, 3)]))
         # because maybe_const is called
-        self.assertEqual(f.args, [(1, 2, 3)])
+        self.assertEqual(f.args, ((1, 2, 3),))
         self.assertEqual(str(f), 'sum((1, 2, 3))')
 
     def test_get_value(self):
@@ -234,7 +234,7 @@ class TestFunction(TestCase):
         self.assertEqual(x, 6)
         i[id(f)] = 8
         self.assertEqual(f.get_value(i), 6)
-        f.args = DeferredList([(3, 4, 5)])
+        f.args = DeferredTuple([(3, 4, 5)])
         self.assertEqual(f.get_value(i), 6)
         self.assertEqual(f._get_value(i), 12)
 
@@ -242,13 +242,13 @@ class TestFunction(TestCase):
         f = Function('sum', [(1, 2, 3)])
         self.assertEqual(f.maybe_const(), 6)
         s = Selector(0, ())
-        f = Function('sum', DeferredList([DeferredList([s, 2, 3])]))
-        self.assertIs(f.maybe_const(), f)
+        f = Function('sum', DeferredTuple([DeferredTuple([s, 2, 3])]))
+        self.assertRaises(StillDeferred, f.maybe_const)
 
     def test_get_value_with_selector(self):
         i = {'objects': (1,)}
         s = Selector(0, ())
-        f = Function('sum', DeferredList([DeferredList([s, 2, 3])]))
+        f = Function('sum', DeferredTuple([DeferredTuple([s, 2, 3])]))
         self.assertEqual(f.get_value(i), 6)
         i['objects'] = (2,)
         self.assertEqual(f.get_value(i), 6)
@@ -280,7 +280,7 @@ class TestDeferredDict(TestCase):
         self.assertIsNot(d.maybe_const(), d)
         self.assertEqual(d.maybe_const(), {'one': 4})
         d = DeferredDict({'one': Selector(0, None)})
-        self.assertIs(d.maybe_const(), d)
+        self.assertRaises(StillDeferred, d.maybe_const)
 
     def test_get_value(self):
         d = DeferredDict({'one': Selector(0, None), 'two': 2})
@@ -288,21 +288,21 @@ class TestDeferredDict(TestCase):
         self.assertEqual(d.get_value({'objects': ['one']}), {'one': 'one', 'two': 2})
 
 
-class TestDeferredList(TestCase):
+class TestDeferredTuple(TestCase):
     def test_maybe_const(self):
-        l = DeferredList()
+        l = DeferredTuple()
         self.assertIsNot(l.maybe_const(), l)
-        self.assertEqual(l.maybe_const(), [])
-        l = DeferredList(['one', 1])
+        self.assertEqual(l.maybe_const(), ())
+        l = DeferredTuple(['one', 1])
         self.assertIsNot(l.maybe_const(), l)
-        self.assertEqual(l.maybe_const(), ['one', 1])
-        l = DeferredList(['one', Function('max', (2, 4))])
+        self.assertEqual(l.maybe_const(), ('one', 1))
+        l = DeferredTuple(('one', Function('max', (2, 4))))
         self.assertIsNot(l.maybe_const(), l)
-        self.assertEqual(l.maybe_const(), ['one', 4])
-        l = DeferredList(['one', Selector(0, None)])
-        self.assertIs(l.maybe_const(), l)
+        self.assertEqual(l.maybe_const(), ('one', 4))
+        l = DeferredTuple(['one', Selector(0, None)])
+        self.assertRaises(StillDeferred, l.maybe_const)
 
     def test_get_value(self):
-        l = DeferredList(['one', Selector(0, None), 2])
-        self.assertEqual(l.get_value({'objects': [1]}), ['one', 1, 2])
-        self.assertEqual(l.get_value({'objects': ['one']}), ['one', 'one', 2])
+        l = DeferredTuple(['one', Selector(0, None), 2])
+        self.assertEqual(l.get_value({'objects': [1]}), ('one', 1, 2))
+        self.assertEqual(l.get_value({'objects': ['one']}), ('one', 'one', 2))

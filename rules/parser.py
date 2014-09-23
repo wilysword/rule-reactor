@@ -128,12 +128,12 @@ def _error(index, msg='Invalid Rule starting at index {}'):
     return ValueError(msg.format(index))
 
 
-def _parse_list(pinfo, string, index, parse=None,
-                expect=False, term=')', obj=None):
+def _parse_list(pinfo, string, index, parse=None, expect=False,
+                term=')', obj=None, cls=None):
     if parse is None:
         parse = pinfo['parse']
     if obj is None:
-        obj = DeferredList()
+        obj = []
     length = len(string)
     while index < length:
         c = string[index]
@@ -147,6 +147,8 @@ def _parse_list(pinfo, string, index, parse=None,
             expect = False
             obj.append(result)
         elif c == term:
+            if cls is not None:
+                obj = cls(obj)
             return obj, index + 1
         elif not obj:
             expect = True
@@ -160,13 +162,14 @@ def _parse_list(pinfo, string, index, parse=None,
 
 def parse_array(pinfo, string, index):
     if string[index] == '[':
-        return _parse_list(pinfo, string, index + 1, term=']')
+        return _parse_list(pinfo, string, index + 1,
+                           term=']', cls=DeferredTuple)
     return NotImplemented, index
 
 
 def parse_simple_array(pinfo, string, index):
     if string[index] == '[':
-        return _parse_list(pinfo, string, index + 1, term=']', obj=[])
+        return _parse_list(pinfo, string, index + 1, term=']', cls=tuple)
     return NotImplemented, index
 
 
@@ -190,15 +193,14 @@ def _pair(pinfo, string, index):
 
 def parse_object(pinfo, string, index):
     if string[index] == '{':
-        obj, index = _parse_list(pinfo, string, index + 1, _pair, term='}')
-        return DeferredDict(obj), index
+        return _parse_list(pinfo, string, index + 1, _pair,
+                           term='}', cls=DeferredDict)
     return NotImplemented, index
 
 
 def parse_simple_object(pinfo, string, index):
     if string[index] == '{':
-        obj, index = _parse_list(pinfo, string, index + 1, _pair, term='}')
-        return dict(obj), index
+        return _parse_list(pinfo, string, index + 1, _pair, term='}', cls=dict)
     return NotImplemented, index
 
 _simple_values = (
@@ -215,7 +217,7 @@ _parse_simple = subparser(parseloop, parse=parseloop, parsers=_simple_values)
 
 
 def _parse_selector_chain(pinfo, string, index):
-    chain = DeferredList()
+    chain = []
     parse_value = pinfo['parse']
     m = _chainmatch(string, index)
     length = len(string)
@@ -230,7 +232,7 @@ def _parse_selector_chain(pinfo, string, index):
             val, index = parse_value(pinfo, string, index)
             if val is NotImplemented:
                 raise _error(index)
-            chain.append(DeferredList((attr, val)))
+            chain.append(DeferredTuple((attr, val)))
         else:
             chain.append(attr)
         if index < length and string[index] == ';':

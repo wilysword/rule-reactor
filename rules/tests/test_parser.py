@@ -14,7 +14,7 @@ from rules.deferred import *
 from rules.core import *
 
 NORES = (NotImplemented, 0)
-dlist = lambda *a: DeferredList(a)
+dlist = lambda *a: DeferredTuple(a)
 
 
 class TestSimpleParsers(TestCase):
@@ -299,39 +299,39 @@ class TestParseSelector(TestCase):
         self.assertEqual(parse_selector(pi, *a), (Selector('extra', ()), 5))
 
     def test_chain_single(self):
-        NORES = (dlist(), 0)
+        NORES = ([], 0)
         self.assertEqual(self.c('hello'), NORES)
         self.assertEqual(self.c('3'), NORES)
         self.assertEqual(self.c('hello.'), NORES)
         self.assertEqual(self.c('.'), NORES)
-        self.assertEqual(self.c('.hello'), (dlist('hello'), 6))
-        self.assertEqual(self.c('.hello;'), (dlist('hello'), 7))
-        self.assertEqual(self.c('.234hello'), (dlist(234), 4))
-        self.assertEqual(self.c('.-234hello'), (dlist(-234), 5))
-        self.assertEqual(self.c('.hel-2lo'), (dlist('hel'), 4))
-        self.assertEqual(self.c('hey.hello', 3), (dlist('hello'), 9))
-        self.assertEqual(self.c('.heL_lo'), (dlist('heL_lo'), 7))
+        self.assertEqual(self.c('.hello'), (['hello'], 6))
+        self.assertEqual(self.c('.hello;'), (['hello'], 7))
+        self.assertEqual(self.c('.234hello'), ([234], 4))
+        self.assertEqual(self.c('.-234hello'), ([-234], 5))
+        self.assertEqual(self.c('.hel-2lo'), (['hel'], 4))
+        self.assertEqual(self.c('hey.hello', 3), (['hello'], 9))
+        self.assertEqual(self.c('.heL_lo'), (['heL_lo'], 7))
 
     def test_chain_arg(self):
-        self.assertEqual(self.c('.hey:1'), (dlist(dlist('hey', 1)), 6))
-        self.assertEqual(self.c('.hey:1,2'), (dlist(dlist('hey', 1)), 6))
+        self.assertEqual(self.c('.hey:1'), ([dlist('hey', 1)], 6))
+        self.assertEqual(self.c('.hey:1,2'), ([dlist('hey', 1)], 6))
         f = Function('min', (1, 2))
-        self.assertEqual(self.c('.hey:min(1,2)'), (dlist(dlist('hey', f)), 13))
-        self.assertEqual(self.c('.hey:min( 1 , 2 )'), (dlist(dlist('hey', f)), 17))
+        self.assertEqual(self.c('.hey:min(1,2)'), ([dlist('hey', f)], 13))
+        self.assertEqual(self.c('.hey:min( 1 , 2 )'), ([dlist('hey', f)], 17))
         self.assertRaises(ValueError, self.c, '.hey: min(1,2)')
         self.assertRaises(ValueError, self.c, '.hey:min (1,2)')
 
     def test_chain_multiple(self):
-        self.assertEqual(self.c('.hey.hi'), (dlist('hey', 'hi'), 7))
-        self.assertEqual(self.c('.2.hi'), (dlist(2, 'hi'), 5))
-        self.assertEqual(self.c('.hey:3.hi'), (dlist(dlist('hey', 3.)), 7))
-        self.assertEqual(self.c('.hey:3..hi'), (dlist(dlist('hey', 3.), 'hi'), 10))
-        self.assertEqual(self.c('.hey:3.3.hi'), (dlist(dlist('hey', 3.3), 'hi'), 11))
-        self.assertEqual(self.c('.hey:3;.3.hi'), (dlist(dlist('hey', 3), 3, 'hi'), 12))
+        self.assertEqual(self.c('.hey.hi'), (['hey', 'hi'], 7))
+        self.assertEqual(self.c('.2.hi'), ([2, 'hi'], 5))
+        self.assertEqual(self.c('.hey:3.hi'), ([dlist('hey', 3.)], 7))
+        self.assertEqual(self.c('.hey:3..hi'), ([dlist('hey', 3.), 'hi'], 10))
+        self.assertEqual(self.c('.hey:3.3.hi'), ([dlist('hey', 3.3), 'hi'], 11))
+        self.assertEqual(self.c('.hey:3;.3.hi'), ([dlist('hey', 3), 3, 'hi'], 12))
         f = Function('min', ())
-        self.assertEqual(self.c('.hey.hi:min()'), (dlist('hey', dlist('hi', f)), 13))
-        self.assertEqual(self.c('.hey.hi:min();'), (dlist('hey', dlist('hi', f)), 14))
-        self.assertEqual(self.c('hello.hey.hi', 5), (dlist('hey', 'hi'), 12))
+        self.assertEqual(self.c('.hey.hi:min()'), (['hey', dlist('hi', f)], 13))
+        self.assertEqual(self.c('.hey.hi:min();'), (['hey', dlist('hi', f)], 14))
+        self.assertEqual(self.c('hello.hey.hi', 5), (['hey', 'hi'], 12))
         self.assertRaises(ValueError, self.c, '.hey.hi:yo')
 
     def test_selector_deferred(self):
@@ -479,7 +479,7 @@ class TestParseValue(TestParseDeferred):
         self.assertEqual(self.p(SAMPLES['array']), (dlist(1.1, 'you', d), 24))
 
 
-class TestParseDeferredList(TestCase):
+class TestParseDeferredTuple(TestCase):
     def setUp(self):
         self.pinfo = {'parse': 0, 'parsers': {'deferred': parse_deferred}}
 
