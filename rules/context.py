@@ -45,7 +45,7 @@ class RuleChecker(object):
             try:
                 rule.continue_(info, self.continuations)
             except NoContinuationError:
-                logger.debug(exc_info=True)
+                logger.debug('Continuation not found', exc_info=True)
         return matches
 
     def __enter__(self):
